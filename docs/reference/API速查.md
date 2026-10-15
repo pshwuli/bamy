@@ -11,11 +11,13 @@
 1. 系统一共有哪些端点
 2. 端点按模块怎么分组
 3. 每个端点的用途是什么，属于哪类鉴权
-4. 有哪些 WebSocket 频道和事件
-5. 限流额度是多少
-6. 请求与响应有哪些公共约定
+4. 策略、插件与插件绑定分别有哪些端点
+5. 有哪些 WebSocket 频道和事件
+6. 限流额度是多少
+7. 请求与响应有哪些公共约定
 
 详细请求体、响应体、字段含义见《接口契约》。
+策略与插件的区别、插件作用域的生效链见《策略规范》与《插件规范》。
 
 ---
 
@@ -123,13 +125,51 @@
 
 ---
 
-## 五、插件
+## 五、策略、插件与绑定
+
+### 5.1 策略
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/strategies` | 策略列表 |
+| GET | `/api/strategies/{id}` | 策略详情 |
+
+### 5.2 插件市场
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/api/plugins` | 插件列表 |
 | GET | `/api/plugins/{id}` | 插件详情 |
-| POST | `/api/admin/plugins/reload` | 重新扫描插件（管理员） |
+
+### 5.3 插件绑定
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/plugin-bindings` | 绑定列表 |
+| POST | `/api/plugin-bindings` | 新建绑定 |
+| PATCH | `/api/plugin-bindings/{id}` | 修改绑定（启用、停用、设置、优先级） |
+| DELETE | `/api/plugin-bindings/{id}` | 删除绑定 |
+| GET | `/api/plugin-bindings/{id}/health` | 绑定健康度 |
+
+### 5.4 管理员端插件绑定
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/admin/plugin-bindings` | 全系统绑定列表 |
+| POST | `/api/admin/plugin-bindings` | 新建全局绑定 |
+| PATCH | `/api/admin/plugin-bindings/{id}` | 修改全局绑定 |
+| DELETE | `/api/admin/plugin-bindings/{id}` | 删除全局绑定 |
+| GET | `/api/admin/plugins/{id}/health` | 插件全系统健康度 |
+
+被自动停用的全局绑定，用 `PATCH /api/admin/plugin-bindings/{id}` 传 `enabled: true` 手动恢复，不设单独的 recover 端点。
+
+### 5.5 扩展管理
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/api/admin/plugins/reload` | 重新扫描扩展（同时扫描策略与插件） |
+
+策略与插件的区别、插件作用域与生效链见《策略规范》与《插件规范》。重新扫描只加载磁盘上新增或变更的扩展，不自动创建绑定。
 
 ---
 
@@ -146,13 +186,15 @@
 | POST | `/api/instances/{id}/pause` | 暂停 |
 | POST | `/api/instances/{id}/resume` | 恢复 |
 | GET | `/api/instances/{id}/status` | 状态 |
-| POST | `/api/instances/{id}/change-plugin` | 换插件 |
+| POST | `/api/instances/{id}/change-strategy` | 换策略 |
 | GET | `/api/instances/{id}/orders` | 实例订单 |
 | GET | `/api/instances/{id}/positions` | 实例持仓 |
 | GET | `/api/instances/{id}/logs` | 实例日志 |
 | GET | `/api/instances/{id}/audit-logs` | 实例审计 |
 | POST | `/api/instances/{id}/reset-paper` | 重置模拟盘 |
 | DELETE | `/api/instances/{id}` | 删除实例 |
+
+实例的请求体与响应体中，引用策略的字段为 `strategy_id` 与 `strategy_version`。实例只引用策略，不引用插件。
 
 ---
 
@@ -163,7 +205,6 @@
 | GET | `/api/orders` | 订单列表 |
 | GET | `/api/orders/{id}` | 订单详情 |
 | GET | `/api/orders/{id}/fills` | 成交明细 |
-| POST | `/api/orders/{id}/cancel` | 撤单 |
 | POST | `/api/instances/{id}/orders/{order_id}/cancel` | 实例内撤单 |
 | POST | `/api/instances/{id}/orders/cancel-all` | 撤全部单 |
 | POST | `/api/instances/{id}/positions/{position_id}/close` | 平单个仓 |
@@ -245,6 +286,36 @@
 
 ---
 
+## 十二之二、补充接口
+
+见《接口契约》第二十二节。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/orders/export` | 导出订单 CSV |
+| GET | `/api/paper/compare/export` | 导出多盘对比 CSV |
+| GET | `/api/user/notification-settings` | 通知设置 |
+| PATCH | `/api/user/notification-settings` | 修改通知设置 |
+| GET | `/api/user/preferences` | 偏好 |
+| PATCH | `/api/user/preferences` | 修改偏好 |
+| POST | `/api/admin/users/{id}/reset-password` | 重置用户密码 |
+| GET | `/api/admin/users/{id}` | 用户详情 |
+| GET | `/api/admin/accounts` | 所有账号 |
+| POST | `/api/admin/accounts/{id}/disable` | 强制禁用账号 |
+| POST | `/api/admin/accounts/{id}/enable` | 启用账号 |
+| GET | `/api/admin/plugin-bindings/all` | 全部三级绑定 |
+| DELETE | `/api/admin/plugins/{id}` | 卸载插件 |
+| GET | `/api/admin/plugins/network-hosts` | 出网 hosts 汇总 |
+| GET | `/api/admin/invites` | 邀请码列表 |
+| POST | `/api/admin/invites` | 生成邀请码 |
+| POST | `/api/admin/invites/{id}/disable` | 禁用邀请码 |
+| POST | `/api/admin/invites/{id}/enable` | 启用邀请码 |
+| GET | `/api/admin/invites/{id}/usages` | 使用记录 |
+| GET | `/api/super/backups` | 备份列表 |
+| POST | `/api/super/backups` | 手动备份 |
+| GET | `/api/super/backups/{id}/download` | 下载备份 |
+| POST | `/api/super/backups/{id}/restore` | 恢复备份 |
+
 ## 十三、WebSocket 频道
 
 | 频道 | 路径 | 鉴权 | 用途 |
@@ -280,6 +351,8 @@
 | `circuit_breaker.triggered` | 熔断触发 |
 | `system.alert` | 系统告警 |
 
+插件绑定被自动停用、插件加载失败等插件侧变动，统一通过 `system.alert` 下发到 `/ws/admin`，不新增事件名。
+
 ---
 
 ## 十四、限流
@@ -304,6 +377,7 @@
 **定义了：**
 
 - 全部 HTTP 端点的索引与归属
+- 策略、插件市场、插件绑定与扩展管理的端点
 - WebSocket 频道与事件清单
 - 公共约定：认证头、响应包装、分页、幂等
 - 限流额度
@@ -312,6 +386,7 @@
 
 - 每个端点的请求体与响应体全文 → 《接口契约》
 - 错误码含义与处理建议 → 《错误码》
+- 插件作用域与拦截协议的完整规则 → 《插件规范》
 - 页面如何使用这些接口 → 《前端页面结构》
 - 限流的具体实现与存储 → 《引擎设计》
 
