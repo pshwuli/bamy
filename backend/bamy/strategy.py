@@ -30,12 +30,25 @@ class StrategyContext:
     def name(self) -> str:
         return getattr(self, "_name", "")
 
-    # ---- 下单 ----
-    async def buy(self, amount: float, price: float | None = None, type_: str = "market") -> OrderView:
-        return await self._engine.place_order(self, "buy", amount, price, type_)
+    @property
+    def is_scanner(self) -> bool:
+        """全市场扫描实例（symbol 为 ALL/USDT 或 ALL/USDT:USDT），下单必须传 symbol。"""
+        return str(self.symbol).startswith("ALL/")
 
-    async def sell(self, amount: float, price: float | None = None, type_: str = "market") -> OrderView:
-        return await self._engine.place_order(self, "sell", amount, price, type_)
+    @property
+    def is_futures(self) -> bool:
+        return self.market_type == "futures"
+
+    # ---- 下单 ----
+    # symbol 不传 = 实例绑定的交易对；扫描实例必须传具体交易对。
+    # 合约：buy 开多/平空，sell 开空/平多；reduce_only=True 只减仓不反手。
+    async def buy(self, amount: float, price: float | None = None, type_: str = "market", *,
+                  symbol: str | None = None, reduce_only: bool | None = None) -> OrderView:
+        return await self._engine.place_order(self, "buy", amount, price, type_, symbol=symbol, reduce_only=reduce_only)
+
+    async def sell(self, amount: float, price: float | None = None, type_: str = "market", *,
+                   symbol: str | None = None, reduce_only: bool | None = None) -> OrderView:
+        return await self._engine.place_order(self, "sell", amount, price, type_, symbol=symbol, reduce_only=reduce_only)
 
     async def cancel(self, order_id: str | int) -> Any:
         return await self._engine.cancel_order(self, order_id)
@@ -60,11 +73,11 @@ class StrategyContext:
     async def fetch_balance(self) -> dict[str, Any]:
         return await self._engine.fetch_balance(self)
 
-    async def set_leverage(self, n: int) -> None:
-        await self._engine.set_leverage(self, n)
+    async def set_leverage(self, n: int, symbol: str | None = None) -> None:
+        await self._engine.set_leverage(self, n, symbol)
 
-    async def set_margin_mode(self, mode: str) -> None:
-        await self._engine.set_margin_mode(self, mode)
+    async def set_margin_mode(self, mode: str, symbol: str | None = None) -> None:
+        await self._engine.set_margin_mode(self, mode, symbol)
 
     async def set_position_mode(self, mode: str) -> None:
         await self._engine.set_position_mode(self, mode)
@@ -78,6 +91,14 @@ class StrategyContext:
 
     async def get_orderbook(self, symbol: str | None = None, depth: int = 20) -> dict[str, Any]:
         return await self._engine.get_orderbook(symbol or self.symbol, depth)
+
+    async def all_tickers(self) -> dict[str, dict[str, Any]]:
+        """全部 USDT 交易对的 24h 行情：{symbol: {price, quote_volume, percentage, high, low, ...}}，约 5 秒更新一次。"""
+        return await self._engine.all_tickers("futures" if self.is_futures else "spot")
+
+    async def window_stats(self, symbols: list[str], window: str = "4h") -> dict[str, dict[str, float]]:
+        """候选币的滚动窗口统计（如近 4 小时涨幅、最高价）：{symbol: {change_pct, high, low, open, last, quote_volume}}。"""
+        return await self._engine.window_stats(list(symbols), window)
 
     # ---- 日志 ----
     def log(self, message: str, level: str = "info") -> None:

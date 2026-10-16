@@ -1,0 +1,73 @@
+kind: plugin
+
+id: dingtalk_notify
+name: 钉钉通知
+version: 1.0.0
+author: bamy
+description: >-
+  把成交、出错、自动停止、风控触发（含合约强平）和系统告警推送到钉钉群机器人。
+  消息都以"BAMY"开头，方便设置关键词校验。
+tags: [notify]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [user, account, global]
+default_scope: user
+allow_multiple: false
+
+data_scope: own
+
+priority: 100
+
+network:
+  enabled: true
+  hosts:
+    - oapi.dingtalk.com
+  timeout_ms: 5000
+
+hooks:
+  - event: order.filled
+    handler: on_filled
+  - event: instance.error
+    handler: on_error
+  - event: instance.auto_stopped
+    handler: on_auto_stopped
+  - event: risk.breached
+    handler: on_risk
+  - event: system.alert
+    handler: on_alert
+
+settings:
+  - key: webhook_url
+    label: Webhook 地址
+    type: secret
+    required: true
+    help: 钉钉群 → 群设置 → 机器人 → 自定义，复制 Webhook 地址（https://oapi.dingtalk.com/robot/send?access_token=...）
+    group: 机器人
+
+  - key: secret
+    label: 签名密钥
+    type: secret
+    help: 安全设置选加签时填 SEC 开头的密钥；选自定义关键词时请把关键词设为 BAMY
+    group: 机器人
+
+  - key: notify_fills
+    label: 推送成交
+    type: bool
+    default: true
+    help: 关掉后只推送出错、停止、风控和告警
+    group: 规则
+
+  - key: rate_limit
+    label: 每分钟最多推送
+    type: int
+    default: 20
+    min: 1
+    max: 60
+    help: 飞书、钉钉机器人自身限制约每分钟 20 条
+    group: 规则
+
+dependencies:
+  python: ">=3.11"
+  packages:
+    - httpx>=0.25.0

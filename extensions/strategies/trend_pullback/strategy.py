@@ -85,6 +85,7 @@ class TrendPullbackStrategy(BaseStrategy):
         s = snapshot(H, L, C, self.p)
         if s is None:
             return
+        await self._report(s, bar_close)
         if self.pos:
             held = (bar_close - int(self.pos["entry_bar_ts"])) // self.tf_sec
             reason = should_exit(s, self.p, took_tp1=self.pos["took_tp1"], bars_held=held)
@@ -93,6 +94,21 @@ class TrendPullbackStrategy(BaseStrategy):
                 await self._sell(self.pos["amount"], reason)
         elif should_enter(s, self.p):
             await self._enter(s.close, s.atr, bar_close)
+
+    async def _report(self, s, bar_close: int) -> None:
+        """每根 K 线写一行判断结果，并存进 ctx.state 供界面"策略状态"展示（空仓不再无声无息）。"""
+        nxt = time.strftime("%m-%d %H:%M", time.localtime(bar_close + self.tf_sec))
+        rsi_txt = f"{s.rsi:.1f}" if s.rsi is not None else "-"
+        if self.pos:
+            msg = f"持仓中 · 收盘 {s.close:g} · 止损 {self.pos['stop']:g} · 下一根 K 线 {nxt}"
+        elif not s.up:
+            msg = f"等待：趋势向下，不开仓 · 收盘 {s.close:g} · RSI {rsi_txt} · 下一根 K 线 {nxt}"
+        else:
+            gap = (s.rsi - self.p.rsi_in) if s.rsi is not None else None
+            need = f"，还差 {gap:.1f}" if gap is not None and gap > 0 else ""
+            msg = f"等待：趋势向上，RSI {rsi_txt}（入场需 <{self.p.rsi_in:g}{need}）· 收盘 {s.close:g} · 下一根 K 线 {nxt}"
+        self.ctx.log_info(msg)
+        await self.ctx.state.set("ui.status", {"summary": msg, "next_at": bar_close + self.tf_sec, "at": bar_close})
 
     # ------------------------------------------------------------------ 下单
     async def _enter(self, price: float, atr_value: float, bar_ts: int) -> None:

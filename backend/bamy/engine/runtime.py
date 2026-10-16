@@ -26,8 +26,8 @@ from bamy.db.session import session_scope
 from bamy.engine.adapters import ExchangeError, ExchangeOrder, live_trading_enabled
 from bamy.engine.client_pool import pool
 from bamy.engine.eventbus import bus
-from bamy.engine.market import market
-from bamy.engine.paper import PaperBook, PaperConfig, load_json_map
+from bamy.engine.market import is_scan_symbol, market
+from bamy.engine.paper import FuturesBook, PaperBook, PaperConfig, is_futures_symbol, load_futures_positions, load_json_map
 from bamy.engine.pluginhub import plugin_hub
 from bamy.engine.risk import RiskRejected, risk_engine
 from bamy.extensions.base import OrderView, StateStore, Tick
@@ -37,6 +37,7 @@ from bamy.services import system_config
 from bamy.services.audit import write_audit
 
 log = logging.getLogger("bamy.engine")
+HEARTBEAT_SEC = 900   # 每个运行中实例至少 15 分钟写一行"运行中"日志
 
 TRANSITIONAL = {"starting", "pausing", "resuming", "stopping"}
 STATE_LIMIT = 65536
@@ -57,9 +58,11 @@ class Running:
     ctx: Any
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     paused: bool = False
-    book: PaperBook | None = None
+    book: PaperBook | FuturesBook | None = None
     day_start_equity: float | None = None
     day_key: str = ""
+    extra_subs: set[str] = field(default_factory=set)   # 扫描实例：已持仓币种的单币订阅（模拟撮合/强平用）
+    market_type: str = "spot"
 
 
 class Engine:
@@ -71,6 +74,7 @@ class Engine:
         self.started_at = time.time()
         self._log_buffer: list[SystemLog] = []
         self._ws_broadcast: Any = None
+        self._hb_at: dict[int, float] = {}   # 实例心跳：上次写"运行中"日志的时间
 
     # ======================================================================
     # 公共工具
@@ -83,6 +87,11 @@ class Engine:
 
     async def push(self, event: str, data: dict[str, Any]) -> None:
         await bus.publish(event, data)
+        if event in NOTIFY_EVENTS:
+            await self._persist_notice(event, data)
+            from bamy.services import webhook
+
+            asyncio.get_running_loop().create_task(webhook.deliver(event, data))   # 不等待：用户 webhook 慢不拖累引擎
         if self._ws_broadcast is not None:
             try:
                 await self._ws_broadcast(event, data)
@@ -108,6 +117,19 @@ class Engine:
         async with session_scope() as db:
             db.add_all(batch)
             await db.commit()
+
+    async def _persist_notice(self, event: str, data: dict[str, Any]) -> None:
+        """关键事件写入通知表：刷新页面、换设备后通知中心仍能看到（WS 推送只负责实时）。"""
+        level, title = NOTIFY_EVENTS[event]
+        body = str(data.get("reason") or data.get("error") or data.get("message") or "")[:2000] or None
+        ref = data.get("instance_id") or data.get("account_id")
+        try:
+            async with session_scope() as db:
+                db.add(Notification(owner_id=data.get("owner_id"), level=level, source=event,
+                                    title=f"{title}{f' #{ref}' if ref else ''}"[:128], body=body))
+                await db.commit()
+        except Exception:  # noqa: BLE001 - 通知落库失败不影响主流程
+            log.exception("通知写入失败 event=%s", event)
 
     async def notify(self, title: str, body: str, level: str = "info", *, owner_id: int | None = None,
                      plugin_id: str | None = None, binding_id: int | None = None) -> None:
@@ -198,6 +220,7 @@ class Engine:
         cfg = PaperConfig.from_json(inst.paper_config, {
             "fee_rate": system_config.get("paper.default_fee_rate", 0.001),
             "slippage": system_config.get("paper.default_slippage", 0.0005),
+            "leverage": _leverage_of(inst),
         })
         if acct is None:
             initial = Decimal(str(inst.paper_balance or 10000))
@@ -205,12 +228,15 @@ class Engine:
                                 realized_pnl=Decimal(0), peak_equity=initial, initial_balance=initial)
             db.add(acct)
             await db.commit()
-        book = PaperBook(acct.balance, load_json_map(acct.positions), load_json_map(acct.avg_price),
-                         acct.realized_pnl or Decimal(0), cfg)
+        if inst.market_type == "futures":
+            book = FuturesBook(acct.balance, load_futures_positions(acct.positions), acct.realized_pnl or Decimal(0), cfg)
+        else:
+            book = PaperBook(acct.balance, load_json_map(acct.positions), load_json_map(acct.avg_price),
+                             acct.realized_pnl or Decimal(0), cfg)
         self._books[inst.id] = book
         return book
 
-    async def _save_book(self, db, instance_id: int, book: PaperBook) -> None:
+    async def _save_book(self, db, instance_id: int, book: PaperBook | FuturesBook) -> None:
         acct = (await db.execute(select(PaperAccount).where(PaperAccount.instance_id == instance_id))).scalar_one()
         acct.balance = book.balance
         acct.positions = book.dump_positions()
@@ -283,7 +309,7 @@ class Engine:
                 raise ApiError(exc.code, exc.message, errors=[{"field": exc.field, "reason": exc.message}]) from exc
             runtime_cfg = ext.meta.get("runtime") or {}
             if inst.market_type not in (runtime_cfg.get("market_type") or ["spot"]):
-                raise ApiError(42224)
+                raise ApiError(42224, "策略不支持该市场类型")
             owner = await db.get(User, inst.owner_id)
             if owner is None or owner.status != "active":
                 raise ApiError(42232, "实例所属用户不可用")
@@ -334,10 +360,55 @@ class Engine:
         strategy.ctx = ctx
         strategy._sink = lambda level, msg: self.log(instance_id, level, msg)
         run = Running(instance_id=instance_id, owner_id=snapshot["owner_id"], account_id=snapshot["account_id"],
-                      symbol=snapshot["symbol"], paper=snapshot["paper"], strategy=strategy, ctx=ctx, book=book)
+                      symbol=snapshot["symbol"], paper=snapshot["paper"], strategy=strategy, ctx=ctx, book=book,
+                      market_type=ctx.market_type)
         self.running[instance_id] = run
         await strategy.on_start()
-        market.subscribe(run.symbol, f"inst:{instance_id}", lambda tick, _id=instance_id: self._on_tick(_id, tick))
+        self._subscribe(run)
+
+    def _subscribe(self, run: Running) -> None:
+        iid = run.instance_id
+        market.subscribe(run.symbol, f"inst:{iid}", lambda tick, _id=iid: self._on_tick(_id, tick))
+        self._sync_extra_subs(run)
+
+    def _unsubscribe(self, run: Running) -> None:
+        market.unsubscribe(run.symbol, f"inst:{run.instance_id}")
+        for sym in list(run.extra_subs):
+            market.unsubscribe(sym, f"inst:{run.instance_id}:pos")
+        run.extra_subs.clear()
+
+    def _sync_extra_subs(self, run: Running) -> None:
+        """扫描实例：持仓/挂单涉及的币单独订阅 1 秒行情，用于模拟撮合与强平；平仓后退订。"""
+        if not is_scan_symbol(run.symbol) or run.paused:
+            return
+        want: set[str] = set(getattr(run.strategy, "watched", None) or ())
+        if run.book is not None:
+            want |= set(run.book.price_keys().values())
+            want |= {o["symbol"] for o in run.book.open_orders.values()}
+        for sym in want - run.extra_subs:
+            market.subscribe(sym, f"inst:{run.instance_id}:pos", lambda tick, _id=run.instance_id: self._on_pos_tick(_id, tick))
+        for sym in run.extra_subs - want:
+            market.unsubscribe(sym, f"inst:{run.instance_id}:pos")
+        run.extra_subs = want
+
+    async def _on_pos_tick(self, instance_id: int, raw: dict[str, Any]) -> None:
+        run = self.running.get(instance_id)
+        if run is None or run.paused:
+            return
+        if run.book is not None:
+            await self._match_paper(run, float(raw["price"]), raw["symbol"])
+            await self._check_liquidation(run, {raw["symbol"]: float(raw["price"])})
+        # 持仓币的 1 秒行情也交给策略（止盈止损要及时）；与扫描 tick 共用实例锁，串行执行
+        if run.lock.locked():
+            return
+        tick = Tick(symbol=raw["symbol"], price=float(raw["price"]), bid=_f(raw.get("bid")),
+                    ask=_f(raw.get("ask")), volume=_f(raw.get("volume")), ts=int(raw.get("ts") or 0))
+        async with run.lock:
+            try:
+                await run.strategy.on_tick(tick)
+            except Exception as exc:  # noqa: BLE001
+                await self._strategy_error(instance_id, exc)
+        self._sync_extra_subs(run)
 
     # ---- 运行 ----
     async def _on_tick(self, instance_id: int, raw: dict[str, Any]) -> None:
@@ -346,8 +417,17 @@ class Engine:
             return
         tick = Tick(symbol=raw["symbol"], price=float(raw["price"]), bid=_f(raw.get("bid")),
                     ask=_f(raw.get("ask")), volume=_f(raw.get("volume")), ts=int(raw.get("ts") or 0))
-        if run.book is not None:
-            await self._match_paper(run, tick.price)
+        scan = bool(raw.get("scan"))
+        if run.book is not None and not scan:
+            await self._match_paper(run, tick.price, tick.symbol)
+            await self._check_liquidation(run, {tick.symbol: tick.price})
+        now = time.time()
+        if now - self._hb_at.get(instance_id, 0) >= HEARTBEAT_SEC:
+            # 心跳：即使策略在等机会、一笔不下，日志里也能看到它活着、看着什么价格
+            self._hb_at[instance_id] = now
+            pos_txt = run.book.held_text() if run.book is not None else "实盘"
+            what = f"扫描 {int(tick.volume or 0)} 个交易对" if scan else f"{tick.symbol} 最新价 {tick.price:g}"
+            self.log(instance_id, "info", f"运行中 · {what} · {pos_txt}", module="engine")
         if run.lock.locked():
             return  # 同一实例串行：上一个 tick 未处理完则跳过本次
         async with run.lock:
@@ -356,6 +436,8 @@ class Engine:
                 await self._reset_errors(instance_id)
             except Exception as exc:  # noqa: BLE001 - 策略异常由框架捕获
                 await self._strategy_error(instance_id, exc)
+        if scan:
+            self._sync_extra_subs(run)
 
     async def _reset_errors(self, instance_id: int) -> None:
         run = self.running.get(instance_id)
@@ -419,7 +501,7 @@ class Engine:
             if inst.status != "running" or run is None:
                 raise ApiError(40902, f"当前状态 {inst.status} 不能暂停")
             await self._set_status(instance_id, "pausing")
-            market.unsubscribe(run.symbol, f"inst:{instance_id}")
+            self._unsubscribe(run)
             run.paused = True
             try:
                 await asyncio.wait_for(run.strategy.on_pause(), timeout=10)
@@ -449,7 +531,7 @@ class Engine:
             except Exception as exc:  # noqa: BLE001
                 self.log(instance_id, "warn", f"on_resume 异常：{exc}")
             run.paused = False
-            market.subscribe(run.symbol, f"inst:{instance_id}", lambda tick, _id=instance_id: self._on_tick(_id, tick))
+            self._subscribe(run)
             inst = await self._set_status(instance_id, "running", last_error=None)
             async with session_scope() as db:
                 await write_audit(db, action="instance.resume", actor_id=actor.id if actor else None,
@@ -474,7 +556,7 @@ class Engine:
             run = self.running.get(instance_id)
             close_error = None
             if run is not None:
-                market.unsubscribe(run.symbol, f"inst:{instance_id}")
+                self._unsubscribe(run)
                 try:
                     await asyncio.wait_for(run.strategy.on_stop(), timeout=10)
                 except Exception as exc:  # noqa: BLE001 - on_stop 异常不阻塞停止
@@ -499,7 +581,7 @@ class Engine:
     async def _teardown(self, instance_id: int) -> None:
         run = self.running.pop(instance_id, None)
         if run is not None:
-            market.unsubscribe(run.symbol, f"inst:{instance_id}")
+            self._unsubscribe(run)
             if run.book is not None:
                 async with session_scope() as db:
                     await self._save_book(db, instance_id, run.book)
@@ -512,9 +594,10 @@ class Engine:
                           type_: str = "market", *, source: str = "strategy", is_guard: bool = False,
                           guard_type: str | None = None, stop_price: float | None = None,
                           reduce_only: bool | None = None, client_order_id: str | None = None,
-                          actor_id: int | None = None) -> OrderView:
+                          actor_id: int | None = None, symbol: str | None = None) -> OrderView:
         instance_id = ctx.instance_id
         side = side.lower()
+        symbol = _order_symbol(ctx, symbol)
         if side not in {"buy", "sell"}:
             raise ValueError("side 必须是 buy 或 sell")
         if type_ not in {"market", "limit", "stop_market", "stop_limit", "take_profit", "trailing_stop"}:
@@ -527,7 +610,7 @@ class Engine:
                 return _view(existing)
             inst = await db.get(Instance, instance_id)
             order = Order(client_order_id=cid, instance_id=instance_id, owner_id=inst.owner_id,
-                          account_id=inst.account_id, symbol=inst.symbol, market_type=inst.market_type,
+                          account_id=inst.account_id, symbol=symbol, market_type=inst.market_type,
                           side=side, type=type_, amount=Decimal(str(amount)),
                           price=Decimal(str(price)) if price is not None else None,
                           stop_price=Decimal(str(stop_price)) if stop_price is not None else None,
@@ -537,11 +620,17 @@ class Engine:
             await db.refresh(order)
         await self.push("order.created", _event(order))
         if reduce_only is None:
-            reduce_only = side == "sell"
+            if inst.market_type == "futures":
+                book = self._live_book(instance_id)
+                reduce_only = bool(book and book.is_reducing(symbol, side))
+            else:
+                reduce_only = side == "sell"
 
         # ---- 阶段 1：前置校验 ----
         try:
-            ref_price, amount, price = await self._precheck(instance_id, side, float(amount), price, type_, reduce_only)
+            ref_price, amount, price = await self._precheck(instance_id, side, float(amount), price, type_, reduce_only,
+                                                            allow_stopped=(guard_type == "force_close" and bool(reduce_only)),
+                                                            symbol=symbol)
         except (RiskRejected, ApiError, ExchangeError, ValueError) as exc:
             code = getattr(exc, "code", 42201)
             return await self._reject(order.id, str(getattr(exc, "message", exc)), code=code,
@@ -554,7 +643,8 @@ class Engine:
                                     "account_id": inst.account_id, "paper": inst.paper,
                                     "strategy_id": inst.strategy_id},
                        "order": {"client_order_id": cid, "source": source, "is_guard": is_guard},
-                       "symbol": inst.symbol, "side": side, "amount": amount, "price": price, "type": type_}
+                       "symbol": symbol, "side": side, "amount": amount, "price": price, "type": type_,
+                       "market_type": inst.market_type, "reduce_only": bool(reduce_only), "ref_price": ref_price}
         res = await plugin_hub.intercept("order.before_submit", payload, owner_id=inst.owner_id,
                                          account_id=inst.account_id)
         if not res.allowed:
@@ -591,14 +681,18 @@ class Engine:
             if inst.paper:
                 book = run.book if run and run.book else await self._get_book(instance_id)
                 if type_ == "market":
-                    result = book.fill(cid, inst.symbol, side, amount, ref_price)
+                    result = book.fill(cid, symbol, side, amount, ref_price, reduce_only=bool(reduce_only) and inst.market_type == "futures")
                 else:
-                    result = book.place_limit(cid, inst.symbol, side, amount, float(price or ref_price))
+                    result = book.place_limit(cid, symbol, side, amount, float(price or ref_price),
+                                              reduce_only=bool(reduce_only) and inst.market_type == "futures")
                 async with session_scope() as db:
                     await self._save_book(db, instance_id, book)
                     await db.commit()
+                if run is not None:
+                    self._sync_extra_subs(run)
             else:
-                result = await self._send_live(inst, side, amount, price, type_, cid, stop_price)
+                result = await self._send_live(inst, side, amount, price, type_, cid, stop_price, symbol=symbol,
+                                               reduce_only=bool(reduce_only))
         except ExchangeError as exc:
             error = exc
 
@@ -624,11 +718,14 @@ class Engine:
             return await self._paper_book(db, inst)
 
     async def _precheck(self, instance_id: int, side: str, amount: float, price: float | None, type_: str,
-                        reduce_only: bool) -> tuple[float, float, float | None]:
+                        reduce_only: bool, *, allow_stopped: bool = False,
+                        symbol: str | None = None) -> tuple[float, float, float | None]:
         run = self.running.get(instance_id)
         async with session_scope() as db:
             inst = await db.get(Instance, instance_id)
-            if inst.status not in {"running", "stopping", "starting", "paused"}:
+            symbol = symbol or inst.symbol
+            allowed = {"running", "stopping", "starting", "paused"} | ({"stopped", "error", "created"} if allow_stopped else set())
+            if inst.status not in allowed:
                 raise ApiError(40902, "实例未运行")
             if amount <= 0:
                 raise ApiError(40003, "数量必须大于 0")
@@ -636,6 +733,10 @@ class Engine:
                 raise ApiError(40003, "价格必须大于 0")
             if type_ == "limit" and price is None:
                 raise ApiError(40004, "限价单必须提供价格")
+            if is_scan_symbol(symbol) or "/" not in symbol:
+                raise ApiError(42231, "扫描实例下单必须指定具体交易对")
+            if is_futures_symbol(symbol) != (inst.market_type == "futures"):
+                raise ApiError(42231, "交易对与实例的市场类型不一致（合约交易对形如 BTC/USDT:USDT）")
             if not inst.paper:
                 account = await db.get(Account, inst.account_id)
                 if account is None or account.status != "online":
@@ -644,31 +745,36 @@ class Engine:
                     raise ApiError(40304)
                 if not live_trading_enabled():
                     raise ApiError(42201, "实盘交易未开启")
-            if market.is_stale(inst.symbol) and not reduce_only:
+            if market.is_stale(symbol) and not reduce_only:
                 # 行情延迟超阈值 → 停止开仓
                 try:
-                    await market.fetch(inst.symbol)
+                    await market.fetch(symbol)
                 except Exception as exc:  # noqa: BLE001
                     raise ApiError(50203, "行情不可用，禁止开仓") from exc
-            tick = await market.ticker(inst.symbol)
+            tick = await market.ticker(symbol)
             ref_price = float(price or tick["price"])
             if not inst.paper:
                 client = await pool.get(await db.get(Account, inst.account_id))
-                amount, price = await client.normalize(inst.symbol, amount, price)
+                amount, price = await client.normalize(symbol, amount, price)
             await risk_engine.check_order(db, instance=inst, side=side, amount=amount, price=ref_price,
-                                          reduce_only=reduce_only)
+                                          reduce_only=reduce_only, symbol=symbol)
             # 余额
             if inst.paper:
                 book = run.book if run and run.book else await self._paper_book(db, inst)
-                base = inst.symbol.split("/")[0]
-                if side == "buy" and float(book.balance) < amount * ref_price * (1 + book.config.fee_rate):
-                    raise ApiError(42261)
-                if side == "sell" and float(book.positions.get(base, 0)) < amount - 1e-12:
-                    raise ApiError(42244)
+                code = book.precheck(symbol, side, amount, ref_price, reduce_only=reduce_only)
+                if code:
+                    raise ApiError(code)
+            elif inst.market_type == "futures":
+                client = await pool.get(await db.get(Account, inst.account_id))
+                if not reduce_only:
+                    free = {b.asset: b.free for b in await client.fetch_balance()}.get("USDT", 0)
+                    lev = _leverage_of(inst)
+                    if free < amount * ref_price / lev:
+                        raise ApiError(42243, "合约账户可用保证金不足")
             else:
                 client = await pool.get(await db.get(Account, inst.account_id))
                 balances = {b.asset: b for b in await client.fetch_balance()}
-                base, quote = inst.symbol.split("/")
+                base, quote = symbol.split("/")
                 if side == "buy" and (balances.get(quote).free if balances.get(quote) else 0) < amount * ref_price:
                     raise ApiError(42243)
                 if side == "sell" and (balances.get(base).free if balances.get(base) else 0) < amount:
@@ -676,15 +782,18 @@ class Engine:
         return ref_price, amount, price
 
     async def _send_live(self, inst: Instance, side: str, amount: float, price: float | None, type_: str,
-                         cid: str, stop_price: float | None) -> ExchangeOrder:
+                         cid: str, stop_price: float | None, *, symbol: str | None = None,
+                         reduce_only: bool = False) -> ExchangeOrder:
+        symbol = symbol or inst.symbol
         async with session_scope() as db:
             account = await db.get(Account, inst.account_id)
         client = await pool.get(account)
+        extra = {"reduce_only": reduce_only} if inst.market_type == "futures" else {}
         delays = [2, 5, 5]
         for attempt in range(len(delays) + 1):
             try:
                 return await asyncio.wait_for(
-                    client.create_order(inst.symbol, side, amount, price, type_, cid, stop_price), timeout=10)
+                    client.create_order(symbol, side, amount, price, type_, cid, stop_price, **extra), timeout=10)
             except asyncio.TimeoutError as exc:
                 raise ExchangeError("下单超时，结果未知", 50401, unknown=True) from exc
             except ExchangeError as exc:
@@ -692,7 +801,7 @@ class Engine:
                     raise
                 # 5xx 与可重试网络错误：先用 client_order_id 查一次，防止重复下单
                 try:
-                    return await client.fetch_order_by_client_id(cid, inst.symbol)
+                    return await client.fetch_order_by_client_id(cid, symbol)
                 except Exception:  # noqa: BLE001
                     pass
                 if exc.unknown:
@@ -748,7 +857,7 @@ class Engine:
             if result.status == "filled":
                 rules = (await db.execute(select(RiskRule).where(RiskRule.enabled.is_(True)))).scalars().all()
                 inst = await db.get(Instance, o.instance_id)
-                risk_engine.after_fill(inst, list(rules))
+                risk_engine.after_fill(inst, list(rules), o.symbol)
         if before != o.status or submitted:
             if submitted:
                 await self.push("order.submitted", _event(o))
@@ -772,10 +881,39 @@ class Engine:
         except Exception as exc:  # noqa: BLE001
             self.log(o.instance_id, "warn", f"on_order 异常：{exc}")
 
-    async def _match_paper(self, run: Running, last: float) -> None:
+    async def _check_liquidation(self, run: Running, prices: dict[str, float]) -> None:
+        """合约模拟盘：标记价到强平价 → 按强平价平仓，记一笔强平订单、发通知。"""
+        if run.book is None or not run.book.positions:
+            return
+        hits = run.book.liquidations(prices)
+        if not hits:
+            return
+        async with session_scope() as db:
+            await self._save_book(db, run.instance_id, run.book)
+            for h in hits:
+                now_ = datetime.utcnow()
+                db.add(Order(client_order_id=f"liq{run.instance_id}x{uuid.uuid4().hex[:20]}", instance_id=run.instance_id,
+                             owner_id=run.owner_id, account_id=None, symbol=h["symbol"], market_type="futures",
+                             side="sell" if h["side"] == "long" else "buy", position_side=h["side"], type="market",
+                             amount=Decimal(str(h["amount"])), filled_amount=Decimal(str(h["amount"])),
+                             filled_price=Decimal(str(h["price"])), status="filled", source="system", is_guard=True,
+                             guard_type="liquidation", reason=f"强平：亏掉保证金 {h['loss']:.2f} USDT",
+                             submitted_at=now_, filled_at=now_))
+            await db.commit()
+        for h in hits:
+            msg = (f"强平：{h['symbol']} {'多' if h['side'] == 'long' else '空'}单 {h['amount']:g} 张在 {h['price']:g} 被强平，"
+                   f"亏掉保证金 {h['loss']:.2f} USDT")
+            self.log(run.instance_id, "error", msg, module="engine")
+            await self.push("risk.breached", {"instance_id": run.instance_id, "owner_id": run.owner_id,
+                                              "rule": "liquidation", "message": msg})
+            await self.push("position.changed", {"instance_id": run.instance_id, "owner_id": run.owner_id,
+                                                 "account_id": None, "symbol": h["symbol"]})
+        self._sync_extra_subs(run)
+
+    async def _match_paper(self, run: Running, last: float, symbol: str | None = None) -> None:
         if not run.book or not run.book.open_orders:
             return
-        fills = run.book.match(run.symbol, last)
+        fills = run.book.match(symbol or run.symbol, last)
         if not fills:
             return
         async with session_scope() as db:
@@ -808,7 +946,7 @@ class Engine:
             else:
                 async with session_scope() as db:
                     client = await pool.get(await db.get(Account, inst.account_id))
-                result = await asyncio.wait_for(client.cancel_order(o.exchange_order_id, inst.symbol), timeout=10)
+                result = await asyncio.wait_for(client.cancel_order(o.exchange_order_id, o.symbol), timeout=10)
         except asyncio.TimeoutError:
             async with session_scope() as db:
                 row = await db.get(Order, o.id)
@@ -867,44 +1005,53 @@ class Engine:
             inst = await db.get(Instance, instance_id)
             if inst.paper:
                 book = await self._paper_book(db, inst)
-                return book.positions_list(await self._prices(book), inst.symbol.split("/")[1])
+                return book.positions_list(await self._prices(book), "USDT")
             rows = (await db.execute(select(Order).where(Order.instance_id == instance_id,
                                                          Order.status.in_(("filled", "partial"))))).scalars().all()
-        net, cost = 0.0, 0.0
+        # 按交易对分别推算净持仓（扫描实例一个实例会有多个币）；合约允许净空
+        nets: dict[str, list[float]] = {}
         for o in rows:
             qty = float(o.filled_amount or 0)
             px = float(o.filled_price or o.price or 0)
-            if o.side == "buy":
-                net += qty
-                cost += qty * px
+            net, cost = nets.setdefault(o.symbol, [0.0, 0.0])
+            signed = qty if o.side == "buy" else -qty
+            if net == 0 or (net > 0) == (signed > 0):
+                net, cost = net + signed, cost + abs(signed) * px
             else:
-                if net > 0:
-                    cost -= cost / net * min(qty, net)
-                net -= qty
-        if net <= 1e-12:
-            return []
-        avg = cost / net if net else 0
-        try:
-            mark = float((await market.ticker(inst.symbol))["price"])
-        except Exception:  # noqa: BLE001
-            mark = avg
-        pnl = (mark - avg) * net
-        return [{"id": inst.symbol, "symbol": inst.symbol, "side": "long", "amount": net, "entry_price": avg,
-                 "mark_price": mark, "unrealized_pnl": pnl,
-                 "unrealized_pnl_pct": pnl / (avg * net) * 100 if avg else 0.0, "label": inst.symbol}]
+                closed = min(abs(signed), abs(net))
+                cost -= cost / abs(net) * closed
+                net += signed
+                if abs(net) > 1e-12 and (net > 0) == (signed > 0):   # 反手：剩余部分按本次价格开新仓
+                    cost = abs(net) * px
+            nets[o.symbol] = [net, cost]
+        out = []
+        for sym, (net, cost) in nets.items():
+            if abs(net) <= 1e-12 or (inst.market_type != "futures" and net < 0):
+                continue
+            qty = abs(net)
+            avg = cost / qty if qty else 0
+            try:
+                mark = float((await market.ticker(sym))["price"])
+            except Exception:  # noqa: BLE001
+                mark = avg
+            side = "long" if net > 0 else "short"
+            pnl = (mark - avg) * qty * (1 if side == "long" else -1)
+            out.append({"id": sym, "symbol": sym, "side": side, "amount": qty, "entry_price": avg,
+                        "mark_price": mark, "unrealized_pnl": pnl,
+                        "unrealized_pnl_pct": pnl / (avg * qty) * 100 if avg else 0.0, "label": sym})
+        return out
 
-    async def _prices(self, book: PaperBook) -> dict[str, float]:
+    async def _prices(self, book: PaperBook | FuturesBook) -> dict[str, float]:
+        """持仓估值价：键与 book.positions 一致（现货按币名，合约按交易对）。"""
         out = {}
-        for base in book.positions:
-            for quote in ("USDT",):
-                sym = f"{base}/{quote}"
-                tick = market.cached(sym)
-                if tick is None:
-                    try:
-                        tick = await market.ticker(sym)
-                    except Exception:  # noqa: BLE001
-                        continue
-                out[base] = float(tick["price"])
+        for key, sym in book.price_keys().items():
+            tick = market.cached(sym)
+            if tick is None:
+                try:
+                    tick = await market.ticker(sym)
+                except Exception:  # noqa: BLE001
+                    continue
+            out[key] = float(tick["price"])
         return out
 
     async def _before_close(self, ctx, position_id: str, amount: float | None, is_manual: bool) -> float | None:
@@ -913,7 +1060,8 @@ class Engine:
         res = await plugin_hub.intercept("position.before_close",
                                          {"instance": {"id": inst.id, "name": inst.name, "owner_id": inst.owner_id,
                                                        "account_id": inst.account_id, "paper": inst.paper},
-                                          "position_id": position_id, "symbol": inst.symbol, "amount": amount,
+                                          "position_id": position_id,
+                                          "symbol": position_id if "/" in str(position_id) else inst.symbol, "amount": amount,
                                           "is_manual": is_manual},
                                          owner_id=inst.owner_id, account_id=inst.account_id)
         if not res.allowed:
@@ -992,7 +1140,7 @@ class Engine:
             raise ApiError(42244)
         side = "sell" if pos.get("side", "long") == "long" else "buy"
         view = await self.place_order(ctx, side, qty, None, "market", source=source, reduce_only=True,
-                                      guard_type=guard_type, actor_id=actor_id)
+                                      guard_type=guard_type, actor_id=actor_id, symbol=pos.get("symbol"))
         async with session_scope() as db:
             await write_audit(db, action="position.close", actor_id=actor_id, target_type="instance",
                               target_id=ctx.instance_id, new_value={"position_id": position_id, "amount": qty,
@@ -1013,21 +1161,63 @@ class Engine:
     # ---- 账户与行情 API ----
     async def fetch_balance(self, ctx) -> dict[str, Any]:
         if ctx.paper:
-            book = await self._get_book(ctx.instance_id)
-            return {"USDT": {"free": float(book.balance), "used": 0.0, "total": float(book.balance)},
-                    **{k: {"free": float(v), "used": 0.0, "total": float(v)} for k, v in book.positions.items()}}
+            run = self.running.get(ctx.instance_id)
+            book = run.book if run and run.book else await self._get_book(ctx.instance_id)
+            return book.balance_view()
         async with session_scope() as db:
             client = await pool.get(await db.get(Account, ctx.account_id))
         return {b.asset: {"free": b.free, "used": b.used, "total": b.total} for b in await client.fetch_balance()}
 
-    async def set_leverage(self, ctx, n: int) -> None:
-        raise ApiError(42224, "现货不支持设杠杆（U 本位合约为预留扩展位）")
+    async def set_leverage(self, ctx, n: int, symbol: str | None = None) -> None:
+        """合约杠杆：模拟盘改模拟账户（只影响之后新开的仓）；实盘调币安。上限受风控 max_leverage 约束。"""
+        if ctx.market_type != "futures":
+            raise ApiError(42224, "现货不支持设杠杆")
+        n = int(n)
+        cap = await risk_engine.max_leverage(getattr(ctx, "_owner_id", None))
+        if not 1 <= n <= cap:
+            raise ApiError(42247, f"杠杆必须在 1–{cap} 倍之间（风控上限）")
+        async with session_scope() as db:
+            inst = await db.get(Instance, ctx.instance_id)
+            cfg = json.loads(inst.paper_config or "{}") if inst.paper else {}
+            if inst.paper:
+                cfg["leverage"] = n
+                inst.paper_config = json.dumps(cfg)
+                await db.commit()
+                book = self._books.get(inst.id)
+                if book is not None:
+                    book.config.leverage = n
+                return
+            client = await pool.get(await db.get(Account, inst.account_id))
+            sym = _order_symbol(ctx, symbol)
+        await client.set_leverage(sym, n)
 
-    async def set_margin_mode(self, ctx, mode: str) -> None:
-        raise ApiError(42224, "现货不支持保证金模式")
+    async def set_margin_mode(self, ctx, mode: str, symbol: str | None = None) -> None:
+        if ctx.market_type != "futures":
+            raise ApiError(42224, "现货不支持保证金模式")
+        if mode != "isolated":
+            raise ApiError(42224, "目前只支持逐仓（isolated）")
+        if ctx.paper:
+            return   # 模拟合约账户固定逐仓
+        async with session_scope() as db:
+            inst = await db.get(Instance, ctx.instance_id)
+            client = await pool.get(await db.get(Account, inst.account_id))
+        await client.set_margin_mode(_order_symbol(ctx, symbol), mode)
 
     async def set_position_mode(self, ctx, mode: str) -> None:
-        raise ApiError(42224, "现货不支持持仓模式")
+        if ctx.market_type != "futures":
+            raise ApiError(42224, "现货不支持持仓模式")
+        if mode != "oneway":
+            raise ApiError(42224, "目前只支持单向持仓（oneway）")
+
+    def _live_book(self, instance_id: int) -> PaperBook | FuturesBook | None:
+        run = self.running.get(instance_id)
+        return run.book if run and run.book is not None else self._books.get(instance_id)
+
+    async def all_tickers(self, market_type: str) -> dict[str, dict[str, Any]]:
+        return await market.all_tickers(market_type)
+
+    async def window_stats(self, symbols: list[str], window: str) -> dict[str, dict[str, float]]:
+        return await market.window_stats(symbols, window)
 
     def get_ticker(self, symbol: str) -> dict[str, Any] | None:
         tick = market.cached(symbol)
@@ -1164,6 +1354,8 @@ class Engine:
                                                              Instance.deleted_at.is_(None)))).scalars().all()
         expected: dict[str, float] = {}
         for inst in insts:
+            if inst.market_type == "futures":
+                continue   # 合约持仓不在现货余额里，按仓位接口对账（见 BinanceFuturesAdapter.fetch_positions）
             for pos in await self.framework_positions(inst.id):
                 base = pos["symbol"].split("/")[0]
                 expected[base] = expected.get(base, 0.0) + float(pos["amount"])
@@ -1322,7 +1514,7 @@ class Engine:
     async def shutdown(self) -> None:
         """优雅停机：保存状态但不改 enabled，下次启动可恢复。"""
         for iid, run in list(self.running.items()):
-            market.unsubscribe(run.symbol, f"inst:{iid}")
+            self._unsubscribe(run)
             if run.book is not None:
                 async with session_scope() as db:
                     await self._save_book(db, iid, run.book)
@@ -1377,4 +1569,37 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
+# 需要进通知中心的事件：(级别, 标题)。高频事件（tick、order.created/submitted）不进
+NOTIFY_EVENTS: dict[str, tuple[str, str]] = {
+    "instance.error": ("error", "实例出错"),
+    "instance.auto_stopped": ("error", "实例已自动停止"),
+    "order.failed": ("warn", "下单失败"),
+    "order.rejected": ("warn", "订单被拒"),
+    "order.filled": ("info", "订单成交"),
+    "guard.missing": ("error", "保护单缺失"),
+    "guard.triggered": ("warn", "保护单触发"),
+    "risk.breached": ("warn", "触发风控"),
+    "risk.circuit_break": ("error", "已熔断"),
+    "risk.circuit_recover": ("info", "熔断已解除"),
+    "account.invalid": ("error", "账号失效"),
+    "account.recovered": ("info", "账号已恢复"),
+    "reconcile.diff": ("warn", "对账发现差异"),
+    "system.alert": ("error", "系统告警"),
+}
+
 engine = Engine()
+
+
+def _order_symbol(ctx, symbol: str | None) -> str:
+    """下单交易对：策略显式传入优先（扫描实例必须传），否则用实例绑定的交易对。"""
+    sym = (symbol or ctx.symbol or "").strip()
+    if getattr(ctx, "market_type", "spot") == "futures" and sym and ":" not in sym and sym.endswith("/USDT"):
+        sym = f"{sym}:USDT"   # 合约实例里写 BTC/USDT 也认，自动转成 BTC/USDT:USDT
+    return sym
+
+
+def _leverage_of(inst: Instance) -> int:
+    try:
+        return max(1, int(json.loads(inst.paper_config or "{}").get("leverage") or 1))
+    except (TypeError, ValueError):
+        return 1

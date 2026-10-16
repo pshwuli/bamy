@@ -7,18 +7,27 @@ import { tokenStore } from '@/utils/token'
 import { useNotifications, type NoticeCategory } from './notifications'
 import { t } from '@/i18n'
 
+// 与后端 engine/runtime.py 的 NOTIFY_EVENTS 一致（事件名以后端 eventbus.EVENTS 为准）
 const KEY_EVENTS: Record<string, NoticeCategory> = {
   'instance.error': 'alert',
-  'risk.alert': 'alert',
-  'circuit_breaker.triggered': 'alert',
-  'system.alert': 'system',
+  'instance.auto_stopped': 'alert',
   'order.filled': 'order',
   'order.failed': 'order',
-  'account.status': 'system',
-  'plugin.auto_disabled': 'alert',
+  'order.rejected': 'order',
+  'guard.missing': 'alert',
+  'guard.triggered': 'alert',
+  'risk.breached': 'alert',
+  'risk.circuit_break': 'alert',
+  'risk.circuit_recover': 'system',
+  'account.invalid': 'alert',
+  'account.recovered': 'system',
+  'reconcile.diff': 'system',
+  'system.alert': 'system',
   'binding.auto_disabled': 'alert',
+  notification: 'system',
 }
-const POPUP = new Set(['instance.error', 'risk.alert', 'circuit_breaker.triggered', 'system.alert', 'order.failed', 'plugin.auto_disabled', 'binding.auto_disabled'])
+// 需要弹窗提醒的（会打断用户的只放真正要处理的事）
+const POPUP = new Set(['instance.error', 'instance.auto_stopped', 'guard.missing', 'risk.circuit_break', 'account.invalid', 'system.alert', 'binding.auto_disabled'])
 
 function describe(msg: WsMessage): { title: string; body?: string; link?: string } {
   const d = (msg.data ?? {}) as Record<string, unknown>

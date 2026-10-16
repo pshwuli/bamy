@@ -25,6 +25,7 @@ SUBSCRIPTION_EVENTS = {
     "risk.breached", "risk.circuit_break", "risk.circuit_recover", "account.invalid",
     "account.recovered", "account.limit_hit", "instance.error", "instance.auto_stopped",
     "reconcile.diff", "reconcile.completed", "system.alert", "tick",
+    "system.heartbeat",          # 每 5 分钟一次的定时事件（日报、回撤提醒等定时插件用）
 }
 SCORE_CHECK = {"global": 0, "user": 1, "account": 2}
 

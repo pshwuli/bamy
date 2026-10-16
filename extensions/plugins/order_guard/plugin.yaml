@@ -1,0 +1,68 @@
+kind: plugin
+
+id: order_guard
+name: 下单守卫
+version: 1.0.0
+author: bamy
+description: >-
+  每笔开仓单发出前再检查一遍：单笔金额上限（超了可以拒单或自动缩小）、币种黑名单、
+  只允许在指定时段开仓。平仓/减仓单永远放行，不会把你困在仓位里。
+tags: [risk, guard]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [global, user, account]
+default_scope: user
+allow_multiple: false
+
+data_scope: own
+
+priority: 50
+
+hooks:
+  - checkpoint: order.before_submit
+    handler: before_order
+    fail_mode: open
+    timeout_ms: 200
+
+settings:
+  - key: max_notional
+    label: 单笔金额上限（USDT）
+    type: float
+    default: 0
+    min: 0
+    help: 0 表示不限制。按"数量 × 价格"估算，市价单用最新价。合约按名义价值（含杠杆）算。
+    group: 金额
+
+  - key: over_action
+    label: 超过上限时
+    type: select
+    default: shrink
+    options:
+      - { value: shrink, label: 自动缩小到上限 }
+      - { value: deny, label: 直接拒单 }
+    group: 金额
+
+  - key: blacklist
+    label: 禁止开仓的币（逗号分隔）
+    type: string
+    default: ""
+    max_length: 1000
+    help: 写币名即可，例如 "LUNA,FTT"；现货和合约都生效
+    group: 币种
+
+  - key: hours
+    label: 允许开仓的时段（时，逗号分隔区间）
+    type: string
+    default: ""
+    max_length: 100
+    help: 例如 "9-23" 或 "0-2,8-24"；留空表示全天。按下方时区。
+    group: 时段
+
+  - key: tz_offset
+    label: 时区（相对 UTC 的小时）
+    type: int
+    default: 8
+    min: -12
+    max: 14
+    group: 时段

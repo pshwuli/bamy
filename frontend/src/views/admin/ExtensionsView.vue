@@ -265,6 +265,10 @@ async function saveGlobal() {
   }
 }
 
+async function reinstall(p: Any) {
+  const r = await attempt(() => adminExtApi.reinstall(p.id) as Promise<unknown>, t('extx.reinstallDone'))
+  if (r !== undefined) void loadPlugins()
+}
 async function uninstall(p: Any) {
   if (!auth.isSuper) return
   if (!(await confirmTyped(t('ext.uninstallConfirm', { name: p.name || p.id }), p.id, t('ext.uninstall')))) return
@@ -648,6 +652,7 @@ onMounted(() => {
                         <el-button v-if="(row.network_hosts ?? []).length" link type="primary" @click="reviewHosts(row)">{{ t('ext.reviewHosts') }}</el-button>
                         <el-button link type="primary" @click="viewHealth(row.id)">{{ t('ext.health') }}</el-button>
                         <el-button v-if="auth.isSuper && row.load_status !== 'uninstalled'" link type="danger" @click="uninstall(row)">{{ t('ext.uninstall') }}</el-button>
+                        <el-button v-if="auth.isSuper && row.load_status === 'uninstalled'" link type="primary" @click="reinstall(row)">{{ t('extx.reinstall') }}</el-button>
                       </div>
                     </template>
                   </el-table-column>

@@ -9,7 +9,7 @@ import { useTable } from '@/composables/useTable'
 import { useLive } from '@/composables/useLive'
 import { confirm } from '@/composables/useConfirm'
 import { attempt } from '@/composables/useErrors'
-import { fmtMoney, fmtTime } from '@/utils/format'
+import { fmtMoney, fmtTime, fmtSymbol } from '@/utils/format'
 import PageHeader from '@/components/PageHeader.vue'
 import FilterBar from '@/components/FilterBar.vue'
 import Pager from '@/components/Pager.vue'
@@ -156,7 +156,7 @@ useLive({
             <el-table-column :label="t('instance.strategy')" min-width="120" show-overflow-tooltip>
               <template #default="{ row }">{{ row.strategy_name || row.strategy_id }}</template>
             </el-table-column>
-            <el-table-column prop="symbol" :label="t('instance.symbol')" min-width="90" />
+            <el-table-column :label="t('instance.symbol')" min-width="90"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
             <el-table-column :label="t('instance.account')" min-width="110" show-overflow-tooltip>
               <template #default="{ row }">{{ row.paper ? t('common.paper') : row.account_name || '-' }}</template>
             </el-table-column>

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bamy.core.crypto import hmac_token
 from bamy.core.errors import ApiError
 from bamy.core.security import decode_token
-from bamy.db.models import Account, ApiToken, Instance, User
+from bamy.db.models import Account, ApiToken, Instance, User, UserSession
 from bamy.db.session import get_session
 
 ROLE_RANK = {"user": 1, "admin": 2, "super_admin": 3}
@@ -74,6 +74,13 @@ async def current(request: Request, db: AsyncSession = Depends(get_session)) -> 
         payload = decode_token(token)
         user = await db.get(User, int(payload["sub"]))
         scope = None
+        sid = payload.get("sid")
+        if sid is not None:
+            sess = await db.get(UserSession, int(sid))
+            if sess is None or sess.revoked_at is not None or sess.user_id != int(payload["sub"]) \
+                    or sess.expires_at < datetime.utcnow():
+                raise ApiError(40102, "登录已失效，请重新登录")
+            request.state.session_id = int(sid)
     if user is None:
         raise ApiError(40102)
     if user.status == "disabled":

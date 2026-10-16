@@ -10,7 +10,7 @@ import { ApiError, fieldErrors } from '@/api/http'
 import type { Account, Instance, Order, Position, Query } from '@/api/types'
 import { useTable } from '@/composables/useTable'
 import { confirm } from '@/composables/useConfirm'
-import { fmtMoney, fmtNum, fmtPct, fmtTime, pnlClass } from '@/utils/format'
+import { fmtMoney, fmtNum, fmtPct, fmtTime, pnlClass, fmtSymbol } from '@/utils/format'
 import { req } from '@/utils/rules'
 import PageHeader from '@/components/PageHeader.vue'
 import Pager from '@/components/Pager.vue'
@@ -383,7 +383,7 @@ watch(
                     <span v-else>-</span>
                   </template>
                 </el-table-column>
-                <el-table-column :label="t('instance.symbol')" prop="symbol" min-width="110" />
+                <el-table-column :label="t('instance.symbol')" min-width="110"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
                 <el-table-column :label="t('instance.side')" prop="side" width="80" />
                 <el-table-column :label="t('instance.amount')" align="right" min-width="110">
                   <template #default="{ row }">{{ fmtNum(row.amount, 8) }}</template>
@@ -418,7 +418,7 @@ watch(
                 <el-table-column :label="t('instance.strategy')" min-width="130">
                   <template #default="{ row }">{{ row.strategy_name || row.strategy_id }}</template>
                 </el-table-column>
-                <el-table-column :label="t('instance.symbol')" prop="symbol" min-width="110" />
+                <el-table-column :label="t('instance.symbol')" min-width="110"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
                 <el-table-column :label="t('instance.mode')" width="90">
                   <template #default="{ row }">{{ row.paper ? t('common.paper') : t('common.live') }}</template>
                 </el-table-column>

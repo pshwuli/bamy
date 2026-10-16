@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { instancesApi } from '@/api/instances'
@@ -9,7 +9,7 @@ import { bindingsApi } from '@/api/extensions'
 import type { Account, Binding, Instance, Order, Row } from '@/api/types'
 import { useLive } from '@/composables/useLive'
 import { useNotifications } from '@/stores/notifications'
-import { fmtMoney, fmtPct, fmtTime, pnlClass } from '@/utils/format'
+import { fmtMoney, fmtPct, fmtTime, pnlClass, fmtSymbol } from '@/utils/format'
 import StatusBadge from '@/components/StatusBadge.vue'
 
 const { t } = useI18n()
@@ -106,6 +106,9 @@ useLive({
 })
 
 onMounted(load)
+// 净值没有实时推送：页面可见时每 30 秒刷新一次，钱和状态会跟着动
+const refresher = setInterval(() => { if (!document.hidden) void load() }, 30000)
+onBeforeUnmount(() => clearInterval(refresher))
 </script>
 
 <template>
@@ -146,7 +149,7 @@ onMounted(load)
             <router-link :to="`/instances/${i.id}`" class="row">
               <span class="row-main">
                 <span class="row-title">{{ i.name }}</span>
-                <span class="row-sub">{{ i.symbol }} · {{ i.strategy_name || i.strategy_id }}<template v-if="i.paper"> · {{ t('dashx.paper') }}</template></span>
+                <span class="row-sub">{{ fmtSymbol(i.symbol) }} · {{ i.strategy_name || i.strategy_id }}<template v-if="i.paper"> · {{ t('dashx.paper') }}</template></span>
               </span>
               <span class="row-side">
                 <span class="num row-num">{{ fmtMoney(i.equity) }}</span>
@@ -167,7 +170,7 @@ onMounted(load)
         <ul v-else class="rows">
           <li v-for="o in orders" :key="o.id" class="row static">
             <span class="row-main">
-              <span class="row-title"><span :class="o.side === 'buy' ? 'pnl-up' : 'pnl-down'">{{ t(`side.${o.side}`) }}</span> {{ o.symbol }}</span>
+              <span class="row-title"><span :class="o.side === 'buy' ? 'pnl-up' : 'pnl-down'">{{ t(`side.${o.side}`) }}</span> {{ fmtSymbol(o.symbol) }}</span>
               <span class="row-sub num">{{ fmtTime(o.created_at) }}</span>
             </span>
             <span class="row-side">

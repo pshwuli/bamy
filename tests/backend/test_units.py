@@ -81,7 +81,7 @@ def test_rate_limiter():
     rl = RateLimiter()
     assert rl.rule_for("/api/auth/login", "POST")[2] == 10
     assert rl.rule_for("/api/admin/users", "GET")[2] == 300
-    assert rl.rule_for("/api/instances", "GET")[2] == 120
+    assert rl.rule_for("/api/instances", "GET")[2] == 600
     assert all(rl.hit("k", 60, 3) == 0 for _ in range(3))
     assert rl.hit("k", 60, 3) > 0
 

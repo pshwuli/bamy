@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { ordersApi, type Fill } from '@/api/orders'
 import { itemsOf } from '@/api/extensions'
 import type { Order } from '@/api/types'
-import { fmtNum, fmtTime } from '@/utils/format'
+import { fmtNum, fmtTime, fmtSymbol } from '@/utils/format'
 import { handleError } from '@/composables/useErrors'
 import StatusBadge from './StatusBadge.vue'
 
@@ -57,7 +57,7 @@ const src = (s?: string) => (s && te(`source.${s}`) ? t(`source.${s}`) : s || '-
           <el-descriptions-item :label="t('order.instance')">
             <router-link :to="`/instances/${order.instance_id}`" @click="open = false">{{ order.instance_name || `#${order.instance_id}` }}</router-link>
           </el-descriptions-item>
-          <el-descriptions-item :label="t('order.symbol')">{{ order.symbol }}</el-descriptions-item>
+          <el-descriptions-item :label="t('order.symbol')">{{ fmtSymbol(order.symbol) }}</el-descriptions-item>
           <el-descriptions-item :label="t('order.side')">{{ t(`side.${order.side}`) }}</el-descriptions-item>
           <el-descriptions-item :label="t('order.type')">{{ order.type }}</el-descriptions-item>
           <el-descriptions-item :label="t('order.amount')">{{ fmtNum(order.amount, 8) }}</el-descriptions-item>

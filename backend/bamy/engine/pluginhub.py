@@ -137,7 +137,54 @@ class PluginHub:
             log_fn=lambda level, msg: engine.log(None, level, msg, module="plugin"),
             notify_fn=lambda title, body, level, _pid=binding.plugin_id, _bid=binding.id: engine.notify(
                 title, body, level, plugin_id=_pid, binding_id=_bid),
+            overview_fn=lambda owner_id, _b=binding: self._overview(_b, owner_id),
         )
+
+    async def _overview(self, binding: PluginBinding, owner_id: int | None) -> dict[str, Any]:
+        """插件只读概览：按绑定作用域裁剪（user 只看自己，account 只看该账号，global 看传入的 owner_id）。"""
+        from datetime import datetime as _dt
+
+        from sqlalchemy import func
+
+        from bamy.db.models import Instance, Order, PaperAccount
+        from bamy.engine.runtime import engine
+
+        async with session_scope() as db:
+            stmt = select(Instance).where(Instance.deleted_at.is_(None))
+            if binding.scope == "user":
+                stmt = stmt.where(Instance.owner_id == binding.scope_id)
+            elif binding.scope == "account":
+                stmt = stmt.where(Instance.account_id == binding.scope_id)
+            elif owner_id is not None:
+                stmt = stmt.where(Instance.owner_id == owner_id)
+            else:
+                return {"instances": []}
+            rows = (await db.execute(stmt.order_by(Instance.id))).scalars().all()
+            day = _dt.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            out = []
+            for i in rows:
+                equity = initial = None
+                if i.paper:
+                    acct = (await db.execute(select(PaperAccount).where(PaperAccount.instance_id == i.id))).scalar_one_or_none()
+                    if acct is not None:
+                        initial = float(acct.initial_balance)
+                        try:
+                            book = await engine._get_book(i.id)
+                            equity = float(book.equity(await engine._prices(book)))
+                        except Exception:  # noqa: BLE001
+                            equity = float(acct.balance)
+                        peak = float(acct.peak_equity or initial)
+                    else:
+                        peak = None
+                else:
+                    peak = None
+                fills = await db.scalar(select(func.count(Order.id)).where(
+                    Order.instance_id == i.id, Order.status == "filled", Order.created_at >= day)) or 0
+                out.append({"id": i.id, "name": i.name, "owner_id": i.owner_id, "status": i.status,
+                            "strategy_id": i.strategy_id, "symbol": i.symbol, "market_type": i.market_type,
+                            "paper": bool(i.paper), "equity": equity, "initial": initial, "peak": peak,
+                            "fills_today": int(fills)})
+        return {"instances": out}
 
     # ---------- 生效链 ----------
     def effective(self, *, owner_id: int | None, account_id: int | None) -> list[tuple[LiveBinding, str]]:
@@ -324,10 +371,13 @@ class PluginHub:
             await db.commit()
         if auto_disabled:
             self._live.pop(b.id, None)
-            from bamy.engine.eventbus import bus
+            from bamy.engine.runtime import engine
 
-            await bus.publish("system.alert", {"level": "error", "title": "插件绑定已自动停用",
-                                               "plugin_id": b.plugin_id, "binding_id": b.id})
+            # 经 engine.push：同时进事件总线、WebSocket（推给绑定所属用户）和通知中心
+            await engine.push("system.alert", {"level": "error", "title": "插件绑定已自动停用",
+                                               "reason": f"插件 {b.plugin_id} 绑定 #{b.id} 连续异常 {threshold} 次，已自动停用，需管理员恢复",
+                                               "plugin_id": b.plugin_id, "binding_id": b.id,
+                                               "owner_id": b.owner_id if b.scope != "global" else None})
 
     def live_ids(self) -> list[int]:
         return list(self._live)

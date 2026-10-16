@@ -54,7 +54,7 @@ class TrendVolTargetStrategy(BaseStrategy):
         await self.ctx.state.set("tv.last_bar", bar)
         w = target_weight(closes, self.p)
         if w is None:
-            self.ctx.log_info(f"日线不足 {self.p.warmup} 根（现有 {len(closes)}），等待")
+            await self._status(f"日线不足 {self.p.warmup} 根（现有 {len(closes)}），等待", bar)
             return
         bal = await self.ctx.fetch_balance()
         base = self.ctx.symbol.split("/")[0]
@@ -67,12 +67,13 @@ class TrendVolTargetStrategy(BaseStrategy):
         self.weight = w
         await self.ctx.state.set("tv.weight", w)
         if not needs_rebalance(cur, w, self.p.rebalance_band):
-            self.ctx.log_info(f"目标仓位 {w:.0%}，当前 {cur:.0%}，偏离在阈值内，不调仓")
+            await self._status(f"目标仓位 {w:.0%}，当前 {cur:.0%}，偏离在阈值内，不调仓", bar)
             return
         delta = (w - cur) * equity
         if abs(delta) < MIN_NOTIONAL:
-            self.ctx.log_info(f"需调仓 {delta:+.2f} {QUOTE}，低于最小下单额 {MIN_NOTIONAL:g}，跳过")
+            await self._status(f"需调仓 {delta:+.2f} {QUOTE}，低于最小下单额 {MIN_NOTIONAL:g}，跳过", bar)
             return
+        await self._status(f"调仓：目标 {w:.0%}，当前 {cur:.0%}", bar, log=False)
         if delta > 0:
             amount = round(min(delta, cash) / price, 8)
             self.ctx.log_info(f"趋势开、目标仓位 {w:.0%}（当前 {cur:.0%}），买入约 {delta:.2f} {QUOTE}")
@@ -82,6 +83,14 @@ class TrendVolTargetStrategy(BaseStrategy):
             why = "趋势关闭，清仓" if w == 0 else f"波动变大，目标仓位降到 {w:.0%}"
             self.ctx.log_info(f"{why}（当前 {cur:.0%}），卖出 {amount:.8g}")
             await self.ctx.sell(amount, type_="market")
+
+    async def _status(self, msg: str, bar: int, log: bool = True) -> None:
+        """写判断结果并存给界面"策略状态"；附下一次判断时间（每天 UTC 0 点后的第一个 tick）。"""
+        nxt = time.strftime("%m-%d %H:%M", time.localtime(bar + DAY))
+        msg = f"{msg} · 下一次判断 {nxt}"
+        if log:
+            self.ctx.log_info(msg)
+        await self.ctx.state.set("ui.status", {"summary": msg, "next_at": bar + DAY, "at": bar})
 
     async def on_order(self, order: OrderView) -> None:
         if order.status in {"rejected", "failed"}:

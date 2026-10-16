@@ -1,4 +1,4 @@
-"""接入适配层：币安现货适配器（基于 ccxt），只做现货，U 本位合约为预留扩展位。"""
+"""接入适配层：币安现货 / U 本位永续合约适配器（基于 ccxt）。"""
 from __future__ import annotations
 
 import logging
@@ -193,6 +193,104 @@ class BinanceSpotAdapter:
     async def fetch_open_orders(self, symbol: str | None = None) -> list[ExchangeOrder]:
         raw = await self.client.fetch_open_orders(symbol)
         return [_parse_order(o, o.get("clientOrderId")) for o in raw]
+
+
+class BinanceFuturesAdapter(BinanceSpotAdapter):
+    """币安 U 本位永续（ccxt.binanceusdm）：单向持仓、逐仓；交易对形如 BTC/USDT:USDT。
+
+    与现货适配器接口一致，另加 set_leverage / set_margin_mode / fetch_positions，下单支持 reduceOnly。
+    """
+
+    def __init__(self, api_key: str, api_secret: str, env: str = "mainnet", readonly: bool = False):
+        self.readonly = readonly
+        opts: dict[str, Any] = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True,
+                                "options": {"adjustForTimeDifference": True}}
+        self.client = ccxt.binanceusdm(opts)
+        if env == "testnet":
+            self.client.set_sandbox_mode(True)
+        self.env = env
+        self.markets = {}
+        self._leverage: dict[str, int] = {}
+
+    async def verify(self) -> dict[str, Any]:
+        try:
+            await self.load_markets()
+        except Exception as exc:  # noqa: BLE001
+            raise ExchangeError(f"无法连接币安合约：{exc}", 50203) from exc
+        try:
+            account = await self.client.fapiPrivateV2GetAccount()
+        except ccxt.AuthenticationError as exc:
+            raise ExchangeError(f"密钥无效或未开通合约权限：{exc}", 42210) from exc
+        except ccxt.PermissionDenied as exc:
+            raise ExchangeError(f"密钥没有合约权限：{exc}", 42211) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise ExchangeError(f"校验失败：{exc}", 50201) from exc
+        can_trade = bool(account.get("canTrade", True))
+        if not self.readonly and not can_trade:
+            raise ExchangeError("该密钥没有 U 本位合约交易权限", 42211)
+        return {"can_trade": can_trade, "can_withdraw": bool(account.get("canWithdraw"))}
+
+    async def set_leverage(self, symbol: str, leverage: int) -> None:
+        try:
+            await self.client.set_leverage(int(leverage), symbol)
+        except Exception as exc:  # noqa: BLE001
+            raise ExchangeError(f"设置杠杆失败：{exc}", 42201, rejected=True) from exc
+        self._leverage[symbol] = int(leverage)
+
+    async def set_margin_mode(self, symbol: str, mode: str = "isolated") -> None:
+        try:
+            await self.client.set_margin_mode(mode, symbol)
+        except ccxt.ExchangeError as exc:
+            if "-4046" in str(exc) or "No need to change" in str(exc):
+                return   # 已经是该模式
+            raise ExchangeError(f"设置保证金模式失败：{exc}", 42201, rejected=True) from exc
+
+    async def fetch_positions(self) -> list[dict[str, Any]]:
+        rows = await self.client.fetch_positions()
+        out = []
+        for p in rows:
+            amt = float(p.get("contracts") or 0)
+            if not amt:
+                continue
+            out.append({"symbol": p["symbol"], "side": p.get("side") or ("long" if amt > 0 else "short"),
+                        "amount": abs(amt), "entry_price": _f(p.get("entryPrice")), "mark_price": _f(p.get("markPrice")),
+                        "unrealized_pnl": _f(p.get("unrealizedPnl")), "leverage": _f(p.get("leverage")),
+                        "liquidation_price": _f(p.get("liquidationPrice")), "margin": _f(p.get("initialMargin"))})
+        return out
+
+    async def create_order(self, symbol: str, side: str, amount: float, price: float | None,
+                           type_: str = "market", client_order_id: str | None = None,
+                           stop_price: float | None = None, reduce_only: bool = False) -> ExchangeOrder:
+        params: dict[str, Any] = {"newClientOrderId": client_order_id} if client_order_id else {}
+        if reduce_only:
+            params["reduceOnly"] = True
+        otype = type_
+        if type_ in {"stop_market", "stop_limit"}:
+            otype = "STOP_MARKET" if type_ == "stop_market" else "STOP"
+            params["stopPrice"] = stop_price
+        try:
+            raw = await self.client.create_order(symbol, otype, side, amount, price, params)
+        except ccxt.InsufficientFunds as exc:
+            raise ExchangeError(f"保证金不足：{exc}", 42243, rejected=True) from exc
+        except (ccxt.InvalidOrder, ccxt.BadRequest, ccxt.OrderNotFound) as exc:
+            raise ExchangeError(f"下单被拒：{exc}", 42201, rejected=True) from exc
+        except (ccxt.NetworkError, ccxt.RequestTimeout) as exc:
+            raise ExchangeError(f"下单结果未知：{exc}", 50401, unknown=True) from exc
+        except ccxt.ExchangeError as exc:
+            if _looks_unknown(exc):
+                raise ExchangeError(f"下单结果未知：{exc}", 50202, unknown=True) from exc
+            raise ExchangeError(f"下单失败：{exc}", 50201, rejected=True) from exc
+        return _parse_order(raw, client_order_id)
+
+    async def fetch_order_by_client_id(self, client_order_id: str, symbol: str) -> ExchangeOrder:
+        raw = await self.client.fetch_order(None, symbol, {"origClientOrderId": client_order_id})
+        return _parse_order(raw, client_order_id)
+
+
+def make_adapter(api_key: str, api_secret: str, *, env: str = "mainnet", readonly: bool = False,
+                 market_type: str = "spot") -> BinanceSpotAdapter:
+    cls = BinanceFuturesAdapter if market_type == "futures" else BinanceSpotAdapter
+    return cls(api_key, api_secret, env=env, readonly=readonly)
 
 
 def _f(v: Any) -> float | None:

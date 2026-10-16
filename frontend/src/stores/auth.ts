@@ -69,7 +69,7 @@ export const useAuth = defineStore('auth', {
     },
     async logout(all = false) {
       try {
-        if (tokenStore.access) await authApi.logout(all)
+        if (tokenStore.access) await authApi.logout(all, tokenStore.refresh)
       } catch {
         /* ignore */
       }

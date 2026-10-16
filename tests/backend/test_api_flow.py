@@ -292,7 +292,7 @@ async def test_admin_endpoints(client, admin_h, user_h):
         assert r.status_code == 200 and body(r)["code"] == 0, (path, r.text)
     r = await client.post("/api/admin/plugins/reload", headers=admin_h)
     d = body(r)["data"]
-    assert d["strategies"]["loaded"] == 3 and d["plugins"]["loaded"] == 2
+    assert d["strategies"]["loaded"] == 4 and d["plugins"]["loaded"] == 8
 
 
 async def test_admin_user_ops(client, admin_h):

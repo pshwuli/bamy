@@ -77,7 +77,8 @@ async function restore(row: Row) {
             <el-table-column v-if="auth.isSuper" :label="t('common.actions')" width="150" :fixed="isMobile ? undefined : 'right'">
               <template #default="{ row }">
                 <el-button size="small" link type="primary" :loading="downloading === row.id" @click="download(row)">{{ t('backup.download') }}</el-button>
-                <el-button size="small" link type="danger" :loading="restoring === row.id" @click="restore(row)">{{ t('backup.restore') }}</el-button>
+                <el-button v-if="row.restorable !== false" size="small" link type="danger" :loading="restoring === row.id" @click="restore(row)">{{ t('backup.restore') }}</el-button>
+                <el-tooltip v-else :content="t('backupx.pgRestoreHint')" placement="top"><span class="muted small">{{ t('backupx.scriptOnly') }}</span></el-tooltip>
               </template>
             </el-table-column>
             <template #empty><EmptyState :action-text="auth.isSuper ? t('backup.create') : undefined" @action="create" /></template>

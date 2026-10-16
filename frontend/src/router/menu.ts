@@ -27,6 +27,7 @@ export const MENU: MenuGroup[] = [
       { path: '/instances', label: 'nav.instances', icon: Cpu },
       { path: '/orders', label: 'nav.orders', icon: List },
       { path: '/paper', label: 'nav.paper', icon: DataLine },
+      { path: '/risk-rules', label: 'nav.riskRules', icon: Warning },
     ],
   },
   {

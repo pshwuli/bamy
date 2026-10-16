@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from bamy.core.crypto import decrypt
-from bamy.engine.adapters import BinanceSpotAdapter
+from bamy.engine.adapters import BinanceSpotAdapter, make_adapter
 
 log = logging.getLogger("bamy.pool")
 
@@ -29,9 +29,9 @@ class ClientPool:
                 client, _ = entry
                 self._clients[account.id] = (client, time.time())
                 return client
-            client = BinanceSpotAdapter(
+            client = make_adapter(
                 decrypt(account.api_key_enc), decrypt(account.api_secret_enc),
-                env=account.env, readonly=bool(account.readonly),
+                env=account.env, readonly=bool(account.readonly), market_type=account.market_type or "spot",
             )
             self._clients[account.id] = (client, time.time())
             return client

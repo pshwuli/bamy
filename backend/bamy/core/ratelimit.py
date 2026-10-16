@@ -17,7 +17,7 @@ RULES: list[tuple[str, int, int, str]] = [
     ("/api/view/", 60, 60, "path"),
     ("/api/public/", 60, 60, "ip"),
     ("/view/", 60, 60, "path"),
-    ("/api/", 60, 120, "user"),
+    ("/api/", 60, 600, "user"),        # 总览一次 7 个请求 + 详情页轮询，120 会把正常翻页的手机用户限住
 ]
 
 

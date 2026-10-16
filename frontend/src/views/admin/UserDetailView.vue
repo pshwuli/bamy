@@ -9,7 +9,7 @@ import { useTable } from '@/composables/useTable'
 import { confirm } from '@/composables/useConfirm'
 import { attempt } from '@/composables/useErrors'
 import { useAuth } from '@/stores/auth'
-import { fmtTime } from '@/utils/format'
+import { fmtTime, fmtSymbol } from '@/utils/format'
 import PageHeader from '@/components/PageHeader.vue'
 import Pager from '@/components/Pager.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -142,7 +142,7 @@ const auditFixed = computed<Query>(() => ({ actor_id: id.value }))
                   <el-table-column :label="t('instance.strategy')" min-width="110" show-overflow-tooltip>
                     <template #default="{ row }">{{ row.strategy_name || row.strategy_id }}</template>
                   </el-table-column>
-                  <el-table-column prop="symbol" :label="t('instance.symbol')" min-width="90" />
+                  <el-table-column :label="t('instance.symbol')" min-width="90"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
                   <el-table-column :label="t('instance.account')" min-width="100" show-overflow-tooltip>
                     <template #default="{ row }">{{ row.paper ? t('common.paper') : row.account_name || '-' }}</template>
                   </el-table-column>
@@ -159,7 +159,7 @@ const auditFixed = computed<Query>(() => ({ actor_id: id.value }))
             <el-alert type="info" :closable="false" show-icon :title="t('adm1.ordersNote')" class="mb" />
             <ul v-if="instTbl.items.value.length" class="link-list">
               <li v-for="i in instTbl.items.value" :key="i.id">
-                <router-link :to="{ path: `/instances/${i.id}`, query: { tab: 'orders' } }">{{ i.name }} · {{ i.symbol }}</router-link>
+                <router-link :to="{ path: `/instances/${i.id}`, query: { tab: 'orders' } }">{{ i.name }} · {{ fmtSymbol(i.symbol) }}</router-link>
                 <StatusBadge kind="instance" :value="i.status" />
               </li>
             </ul>

@@ -72,6 +72,7 @@ class Scheduler:
         self.every("flush_logs", 2, engine.flush_logs)
         self.every("pool_reap", 300, pool.reap_idle, delay=300)
         self.every("log_retention", 86400, self.retention, delay=120)
+        self.every("plugin_heartbeat", 300, lambda: self.heartbeat(engine), delay=30)
 
     async def health_check(self, engine) -> None:
         """账号探活：失败标记异常并暂停其下实例；密钥失效 → 失效 → 停用实例 → 告警。"""
@@ -118,6 +119,21 @@ class Scheduler:
                     await db.commit()
 
         await asyncio.gather(*(probe(a) for a in accounts))
+
+    async def heartbeat(self, engine) -> None:
+        """给插件的定时事件（每 5 分钟）：日报、回撤提醒这类插件靠它定时运行。
+
+        每个有运行中实例的用户各发一份（带 owner_id，用户级绑定能收到），再发一份系统级的（全局绑定）。
+        """
+        from bamy.db.models import User
+
+        now = int(time.time())
+        owners = sorted({r.owner_id for r in engine.running.values()})
+        async with session_scope() as db:
+            active = (await db.execute(select(User.id).where(User.status == "active"))).scalars().all()
+        for uid in sorted(set(owners) | set(active)):
+            await engine.push("system.heartbeat", {"owner_id": uid, "ts": now})
+        await engine.push("system.heartbeat", {"owner_id": None, "ts": now})
 
     async def retention(self) -> None:
         cutoff = datetime.utcnow() - timedelta(days=30)

@@ -174,6 +174,12 @@ async def cb_trigger(body: BreakIn, ctx: Ctx = Depends(admin)):
         raise ApiError(40003, "level 与 target_id 不匹配")
     if body.level == "global" and ctx.user.role != "super_admin":
         raise ApiError(40302, "全局熔断需要 super_admin")
+    if body.level == "account":
+        acc = await ctx.db.get(Account, body.target_id)
+        if acc is None or acc.deleted_at is not None:
+            raise ApiError(40404, "账号不存在")
+    elif body.level == "user" and await ctx.db.get(User, body.target_id) is None:
+        raise ApiError(40401, "用户不存在")
     cb = CircuitBreaker(level=body.level, target_id=body.target_id, reason=body.reason, triggered_by="admin")
     ctx.db.add(cb)
     await ctx.db.commit()
@@ -187,7 +193,7 @@ async def cb_trigger(body: BreakIn, ctx: Ctx = Depends(admin)):
     elif body.level == "user":
         payload["owner_id"] = body.target_id
     await engine.push("risk.circuit_break", payload)
-    return ok(_cb_out(cb), status_code=201)
+    return ok(_cb_out(cb, await _cb_names(ctx)), status_code=201)
 
 
 class RecoverIn(BaseModel):
@@ -218,13 +224,46 @@ def _rule_out(r: RiskRule) -> dict[str, Any]:
             "updated_at": iso(r.updated_at), "scope": "global" if r.owner_id is None else ("account" if r.account_id else "user")}
 
 
+
+# 各类风控规则的取值格式（前端按这个渲染表单；后端独立校验）
+RULE_SHAPES: dict[str, tuple[str, float, float]] = {
+    "max_order_value": ("value", 1, 1e9),          # 单笔金额上限 USDT
+    "max_daily_value": ("value", 1, 1e10),         # 单日累计下单金额上限 USDT
+    "max_daily_orders": ("value", 1, 1e6),         # 单日下单次数
+    "max_orders_per_minute": ("value", 1, 1e4),    # 每分钟下单次数
+    "max_drawdown": ("value", 0.01, 1),            # 最大回撤比例（0.3 = 30%）
+    "max_daily_loss": ("value", 0.01, 1),          # 单日最大亏损比例
+    "symbol_cooldown": ("seconds", 1, 86400 * 7),  # 同一交易对成交后冷却秒数
+    "strategy_cooldown": ("seconds", 1, 86400 * 7),
+    "max_leverage": ("value", 1, 20),              # 合约最大杠杆（倍）
+}
+
+
+def _check_rule_value(rule_type: str, value: dict[str, Any]) -> dict[str, Any]:
+    if rule_type in {"symbol_whitelist", "symbol_blacklist"}:
+        syms = value.get("symbols")
+        if not isinstance(syms, list) or not syms or not all(isinstance(x, str) and "/" in x and len(x) <= 32 for x in syms):
+            raise ApiError(40003, "symbols 需为非空交易对列表，如 [\"BTC/USDT\"]")
+        return {"symbols": sorted({x.strip().upper() for x in syms})[:200]}
+    key, lo, hi = RULE_SHAPES[rule_type]
+    try:
+        v = float(value.get(key))
+    except (TypeError, ValueError):
+        raise ApiError(40003, f"{rule_type} 需要数值字段 {key}") from None
+    if not (lo <= v <= hi):
+        raise ApiError(40003, f"{key} 取值范围 {lo}–{hi}")
+    return {key: v}
+
+
 @router.get("/api/risk-rules")
 async def rules(ctx: Ctx = Depends(current)):
     stmt = select(RiskRule)
     if not ctx.is_admin:
         stmt = stmt.where((RiskRule.owner_id == ctx.user.id) | (RiskRule.owner_id.is_(None)))
     rows = (await ctx.db.execute(stmt.order_by(RiskRule.id))).scalars().all()
-    return ok({"items": [_rule_out(r) for r in rows], "rule_types": sorted(RULE_TYPES)})
+    shapes = {k: {"field": v[0], "min": v[1], "max": v[2]} for k, v in RULE_SHAPES.items()}
+    shapes |= {k: {"field": "symbols", "list": True} for k in ("symbol_whitelist", "symbol_blacklist")}
+    return ok({"items": [_rule_out(r) for r in rows], "rule_types": sorted(RULE_TYPES), "shapes": shapes})
 
 
 class RuleIn(BaseModel):
@@ -245,8 +284,9 @@ async def create_rule(body: RuleIn, ctx: Ctx = Depends(current)):
         acc = await ctx.db.get(Account, body.account_id)
         if acc is None or (acc.owner_id != ctx.user.id and not ctx.is_admin):
             raise ApiError(40404)
+    clean = _check_rule_value(body.rule_type, body.rule_value)
     r = RiskRule(owner_id=None if body.global_rule else ctx.user.id, account_id=body.account_id,
-                 rule_type=body.rule_type, rule_value=json.dumps(body.rule_value), enabled=body.enabled)
+                 rule_type=body.rule_type, rule_value=json.dumps(clean), enabled=body.enabled)
     ctx.db.add(r)
     await ctx.db.commit()
     await write_audit(ctx.db, action="risk.rule_create", target_type="risk_rule", target_id=r.id,
@@ -273,7 +313,7 @@ async def update_rule(rule_id: int, body: RulePatch, ctx: Ctx = Depends(current)
     r = await _rule(ctx, rule_id)
     old = _rule_out(r)
     if body.rule_value is not None:
-        r.rule_value = json.dumps(body.rule_value)
+        r.rule_value = json.dumps(_check_rule_value(r.rule_type, body.rule_value))
     if body.enabled is not None:
         r.enabled = body.enabled
     await ctx.db.commit()
@@ -302,7 +342,10 @@ class ShareIn(BaseModel):
 
 
 def _share_out(s: ShareToken, request: Request | None = None) -> dict[str, Any]:
-    base = str(request.base_url).rstrip("/") if request else ""
+    # 配了 PUBLIC_BASE_URL（对外域名）就用它；否则用请求的 Host（nginx 透传 $http_host，带端口）
+    import os
+
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/") or (str(request.base_url).rstrip("/") if request else "")
     return {"id": s.id, "token": s.token, "url": f"{base}/view/{s.token}", "instance_id": s.instance_id,
             "show_equity": s.show_equity, "show_positions": s.show_positions, "show_orders": s.show_orders,
             "show_params": s.show_params, "show_logs": s.show_logs, "access_count": s.access_count,
@@ -483,6 +526,27 @@ class ConfigsIn(BaseModel):
 
 ENV_ALIASES = {"MAX_INSTANCES_PER_USER": "instance.max_per_user"}
 
+# 数值配置的合法范围（《配置项》第四节）；不在表里的数值项至少要求非负
+CONFIG_RANGES: dict[str, tuple[float, float]] = {
+    "instance.max_per_user": (1, 1000),
+    "account.max_per_user": (1, 200),
+    "plugin.max_per_user": (0, 200),
+    "plugin.auto_disable_threshold": (0, 1000),
+    "paper.default_fee_rate": (0, 0.01),
+    "paper.default_slippage": (0, 0.05),
+    "paper.snapshot_interval": (10, 86400),
+    "risk.max_orders_per_minute": (1, 10000),
+    "risk.max_orders_per_day": (1, 1_000_000),
+    "risk.max_daily_loss": (0, 1),
+    "risk.max_drawdown": (0, 1),
+}
+
+
+def _range_for(key: str, value) -> tuple[float, float] | None:
+    if key in CONFIG_RANGES:
+        return CONFIG_RANGES[key]
+    return (0, float("inf")) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
 
 @router.patch("/api/super/configs")
 async def update_configs(body: ConfigsIn, ctx: Ctx = Depends(super_admin)):
@@ -496,6 +560,9 @@ async def update_configs(body: ConfigsIn, ctx: Ctx = Depends(super_admin)):
             value = type(default)(value) if not isinstance(default, bool) else (value in (True, "true", 1, "1"))
         except (TypeError, ValueError) as exc:
             raise ApiError(40002, f"{key} 类型应为 {type(default).__name__}") from exc
+        rng = _range_for(key, value)
+        if rng is not None and not isinstance(value, bool) and not (rng[0] <= value <= rng[1]):
+            raise ApiError(40003, f"{key} 取值范围 {rng[0]}–{rng[1]}")
         old = system_config.get(key)
         await system_config.set_value(ctx.db, key, value, ctx.user.id)
         changed[key] = {"old": old, "new": value}
@@ -877,7 +944,10 @@ def _backup_out(b: Backup) -> dict[str, Any]:
 @router.get("/api/super/backups")
 async def backups(ctx: Ctx = Depends(super_admin)):
     rows = (await ctx.db.execute(select(Backup).order_by(Backup.id.desc()))).scalars().all()
-    return ok({"items": [_backup_out(b) for b in rows]})
+    online = _sqlite_path() is not None
+    items = [_backup_out(b) | {"restorable": online and b.filename.endswith(".sqlite")} for b in rows]
+    # online_restore=false 时（PostgreSQL），前端隐藏"恢复"按钮并提示用 scripts/restore.sh
+    return ok({"items": items, "online_restore": online})
 
 
 def _sqlite_path() -> Path | None:
@@ -905,9 +975,12 @@ async def create_backup(ctx: Ctx = Depends(super_admin)):
 
         dest = BACKUP_DIR / f"bamy-{stamp}.sql"
         dsn = settings.database_url.replace("postgresql+asyncpg", "postgresql")
-        proc = await asyncio.create_subprocess_exec("pg_dump", "--no-owner", "-f", str(dest), dsn,
-                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                                                    env=os.environ.copy())
+        try:
+            proc = await asyncio.create_subprocess_exec("pg_dump", "--no-owner", "-f", str(dest), dsn,
+                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                                                        env=os.environ.copy())
+        except FileNotFoundError as exc:
+            raise ApiError(50003, "服务器未安装 pg_dump（postgresql-client），无法在线备份；请用 scripts/backup.sh") from exc
         _, err = await proc.communicate()
         if proc.returncode != 0:
             raise ApiError(50003, f"pg_dump 失败：{err.decode()[:300]}")
@@ -939,14 +1012,15 @@ async def restore_backup(backup_id: int, body: RestoreIn, ctx: Ctx = Depends(sup
     path = BACKUP_DIR / b.filename if b else None
     if b is None or not path.exists():
         raise ApiError(40401)
+    # 先判断能不能在线恢复，再动系统状态：PG 不支持在线恢复，此时不能先进只读、先停实例
+    src = _sqlite_path()
+    if src is None or not path.name.endswith(".sqlite"):
+        raise ApiError(50004, "PostgreSQL 部署请在停机状态下用 scripts/restore.sh 恢复（在线恢复只支持 SQLite）")
     await write_audit(ctx.db, action="backup.restore", target_type="backup", target_id=b.id, **ctx.audit_kw())
     # 进入只读模式并停止所有实例；恢复完成后需要重启进程
     READONLY["on"] = True
     for iid in list(engine.running):
         await engine.stop(iid, actor=ctx.user, reason="备份恢复")
-    src = _sqlite_path()
-    if src is None:
-        raise ApiError(50004, "PostgreSQL 请使用 scripts/restore.sh 在停机状态下恢复")
     await ctx.db.close()
     from bamy.db.session import engine as db_engine
 

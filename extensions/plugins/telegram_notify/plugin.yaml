@@ -2,7 +2,7 @@ kind: plugin
 
 id: telegram_notify
 name: Telegram 通知
-version: 1.0.0
+version: 1.0.1
 author: bamy
 description: 把系统告警、成交与自动停止推送到 Telegram，并演示下单拦截
 tags: [notify]

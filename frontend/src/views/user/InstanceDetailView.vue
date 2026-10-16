@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch 
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { instancesApi, shareApi, type PaperAccount, type ShareInput, type Snapshot } from '@/api/instances'
+import { instancesApi, shareApi, type InstanceStatusInfo, type PaperAccount, type ShareInput, type Snapshot } from '@/api/instances'
 import { strategiesApi, itemsOf } from '@/api/extensions'
 import { ApiError, fieldErrors } from '@/api/http'
 import type { LogEntry, Order, Position, Row, SchemaField, ShareToken, Strategy } from '@/api/types'
@@ -14,7 +14,7 @@ import { MoreFilled } from '@element-plus/icons-vue'
 import { confirm } from '@/composables/useConfirm'
 import { attempt, handleError } from '@/composables/useErrors'
 import { useAuth } from '@/stores/auth'
-import { copyText, fmtDuration, fmtMoney, fmtNum, fmtPct, fmtTime, pnlClass, sinceSeconds } from '@/utils/format'
+import { copyText, fmtDuration, fmtMoney, fmtNum, fmtPct, fmtTime, pnlClass, sinceSeconds, fmtSymbol } from '@/utils/format'
 import { mergeValues } from '@/utils/schema'
 import PageHeader from '@/components/PageHeader.vue'
 import Pager from '@/components/Pager.vue'
@@ -132,7 +132,14 @@ async function loadRecentOrders() {
   }
 }
 
+// 策略状态：上次判断结果 / 下次判断时间 / 最近一行日志，区分"在等机会"和"卡住了"
+const runInfo = ref<InstanceStatusInfo | null>(null)
+async function loadRunInfo() {
+  try { runInfo.value = await instancesApi.status(id.value) } catch { /* 静默：状态卡片只是辅助 */ }
+}
+
 function refreshAll() {
+  void loadRunInfo()
   // loadPaper 依赖 inst.paper，必须等实例详情回来再取，否则首屏模拟账户与净值曲线一直为空
   void loadInstance().then(() => loadPaper())
   void loadPositions()
@@ -197,25 +204,25 @@ async function submitReset() {
 const posSelection = ref<Position[]>([])
 const closing = ref(false)
 async function runClose(fn: () => Promise<unknown>) {
+  if (closing.value) return   // 防连点：上一笔平仓没回来之前不再发
   closing.value = true
-  const ok = await attempt(async () => {
-    await fn()
-    return true
-  })
+  const res = await attempt(async () => (await fn()) ?? {})
   closing.value = false
-  if (ok) {
-    posSelection.value = []
-    void loadPositions()
-    void loadPaper()
-    void loadRecentOrders()
-  }
+  // 不论成功失败都刷新：以交易所/模拟盘的真实持仓为准，而不是以按钮结果为准
+  void loadPositions()
+  void loadPaper()
+  void loadRecentOrders()
+  if (res === undefined) return
+  posSelection.value = []
+  const failed = Number((res as Row)?.failed ?? 0)
+  if (failed > 0) ElMessage.warning(t('instx.closePartial', { n: failed }))
 }
 async function closeAllPositions() {
   if (!positions.value.length) return
   if (!hasClose.value) {
     if (!(await confirm(t('instx.forceCloseConfirm'), t('instx.forceCloseAll'), true))) return
     // position_id 省略 = 平掉全部
-    return runClose(() => instancesApi.forceClose(id.value, undefined as unknown as string))
+    return runClose(() => instancesApi.forceClose(id.value))
   }
   if (!(await confirm(t('instance.closeAllConfirm'), t('instance.closeAll'), true))) return
   if (caps.value.close_all) return runClose(() => instancesApi.closeAll(id.value))
@@ -528,6 +535,7 @@ useLive({
 const backstop = setInterval(() => {
   if (inst.value?.status !== 'running' || document.hidden) return
   void loadRecentOrders()
+  void loadRunInfo()
   if (tab.value === 'orders') void ord.load()
 }, 10000)
 onBeforeUnmount(() => clearInterval(backstop))
@@ -572,7 +580,7 @@ function onMore(cmd: string) {
             <span class="meta">
               <StatusBadge kind="instance" :value="inst.status" />
               <span>{{ t('instance.strategy') }}：{{ inst.strategy_name || inst.strategy_id }}<template v-if="inst.strategy_version"> v{{ inst.strategy_version }}</template></span>
-              <span>{{ t('instance.symbol') }}：{{ inst.symbol }}</span>
+              <span>{{ t('instance.symbol') }}：{{ fmtSymbol(inst.symbol) }}</span>
               <span>{{ t('instance.account') }}：{{ accountLabel }}</span>
               <el-tag size="small" :type="inst.paper ? 'info' : 'warning'" disable-transitions>{{ inst.paper ? t('common.paper') : t('common.live') }}</el-tag>
             </span>
@@ -586,6 +594,7 @@ function onMore(cmd: string) {
             <el-button :disabled="!stopped" :title="stopped ? '' : t('instance.needStopped')" @click="startEditParams">{{ t('common.edit') }}</el-button>
             <el-button :disabled="!stopped" :title="stopped ? '' : t('instance.needStopped')" @click="openChange">{{ t('instance.changeStrategy') }}</el-button>
             <el-button type="danger" plain :disabled="!stopped" @click="removeInstance">{{ t('common.delete') }}</el-button>
+          </template>
           <template v-if="isOwner && isMobile">
             <div class="m-actions">
               <el-button v-if="active" type="warning" :loading="acting" @click="act('stop')">{{ t('instance.stop') }}</el-button>
@@ -605,7 +614,6 @@ function onMore(cmd: string) {
                 </template>
               </el-dropdown>
             </div>
-          </template>
           </template>
         </PageHeader>
 
@@ -629,6 +637,17 @@ function onMore(cmd: string) {
               <StatCard :label="t('instance.returnRate')" :value="fmtPct(returnRate)" :tone="returnRate == null ? '' : returnRate >= 0 ? 'up' : 'down'" />
               <StatCard :label="t('instance.maxDrawdown')" :value="maxDrawdown == null ? '-' : fmtPct(maxDrawdown, 2, false)" />
               <StatCard :label="t('instance.runtime')" :value="fmtDuration(runSecs)" />
+            </div>
+
+            <div v-if="runInfo && (runInfo.strategy_status || runInfo.last_log)" class="run-info mb">
+              <div class="ri-head">{{ t('instx.runInfo') }}</div>
+              <p v-if="runInfo.strategy_status" class="ri-sum">{{ runInfo.strategy_status.summary }}</p>
+              <p v-if="runInfo.strategy_status?.at" class="ri-meta">
+                {{ t('instx.lastDecision') }} {{ fmtTime(runInfo.strategy_status.at * 1000, false) }}
+                <template v-if="runInfo.strategy_status.next_at"> · {{ t('instx.nextDecision') }} {{ fmtTime(runInfo.strategy_status.next_at * 1000, false) }}</template>
+              </p>
+              <p v-if="runInfo.last_log" class="ri-meta">{{ t('instx.lastLog') }} {{ fmtTime(runInfo.last_log.at) }}：{{ runInfo.last_log.message }}</p>
+              <p v-if="runInfo.last_tick_at" class="ri-meta">{{ t('instx.lastTick') }} {{ fmtTime(runInfo.last_tick_at) }}</p>
             </div>
 
             <el-card v-if="inst.paper" shadow="never" class="mb">
@@ -663,7 +682,7 @@ function onMore(cmd: string) {
                   <div class="card-head"><span>{{ t('instance.positionsSummary') }}</span><el-button link type="primary" @click="tab = 'positions'">{{ t('instx.viewAll') }}</el-button></div>
                 </template>
                 <el-table :data="positions.slice(0, 5)" size="small" class="resp-table">
-                  <el-table-column prop="symbol" :label="t('instance.symbol')" min-width="100" />
+                  <el-table-column :label="t('instance.symbol')" min-width="100"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
                   <el-table-column :label="t('instance.amount')" align="right"><template #default="{ row }">{{ fmtNum(row.amount, 8) }}</template></el-table-column>
                   <el-table-column :label="t('instance.pnl')" align="right"><template #default="{ row }"><span :class="pnlClass(row.unrealized_pnl)">{{ fmtMoney(row.unrealized_pnl) }}</span></template></el-table-column>
                   <template #empty><el-empty :description="t('common.empty')" :image-size="40" /></template>
@@ -704,6 +723,11 @@ function onMore(cmd: string) {
                 <el-table-column :label="t('instance.amount')" min-width="110" align="right"><template #default="{ row }">{{ fmtNum(row.amount, 8) }}</template></el-table-column>
                 <el-table-column :label="t('instance.entryPrice')" min-width="110" align="right"><template #default="{ row }">{{ fmtNum(row.entry_price, 8) }}</template></el-table-column>
                 <el-table-column :label="t('instance.markPrice')" min-width="110" align="right"><template #default="{ row }">{{ fmtNum(row.mark_price, 8) }}</template></el-table-column>
+                <template v-if="inst.market_type === 'futures'">
+                  <el-table-column :label="t('mkt.lev')" width="64" align="right"><template #default="{ row }">{{ row.leverage ? `${row.leverage}x` : '-' }}</template></el-table-column>
+                  <el-table-column :label="t('mkt.margin')" min-width="100" align="right"><template #default="{ row }">{{ row.margin == null ? '-' : fmtMoney(row.margin) }}</template></el-table-column>
+                  <el-table-column :label="t('mkt.liq')" min-width="110" align="right"><template #default="{ row }"><span class="down">{{ row.liquidation_price == null ? '-' : fmtNum(row.liquidation_price, 8) }}</span></template></el-table-column>
+                </template>
                 <el-table-column :label="t('instance.pnl')" min-width="100" align="right"><template #default="{ row }"><span :class="pnlClass(row.unrealized_pnl)">{{ fmtMoney(row.unrealized_pnl) }}</span></template></el-table-column>
                 <el-table-column :label="t('instance.pnlRate')" min-width="90" align="right"><template #default="{ row }"><span :class="pnlClass(pnlRate(row))">{{ fmtPct(pnlRate(row)) }}</span></template></el-table-column>
                 <el-table-column v-if="isOwner" :label="t('common.actions')" width="110" fixed="right">
@@ -914,4 +938,8 @@ function onMore(cmd: string) {
 @media (max-width: 767px) {
   .desc-resp :deep(.el-descriptions__body .el-descriptions__table) { table-layout: auto; }
 }
+.run-info { border: 1px solid var(--line, #2a2f36); border-left: 3px solid var(--accent); border-radius: 6px; padding: 10px 14px; }
+.run-info .ri-head { font-size: 12px; opacity: .7; margin-bottom: 4px; }
+.run-info .ri-sum { margin: 0 0 4px; font-size: 14px; line-height: 1.5; word-break: break-all; }
+.run-info .ri-meta { margin: 2px 0 0; font-size: 12px; opacity: .75; word-break: break-all; }
 </style>

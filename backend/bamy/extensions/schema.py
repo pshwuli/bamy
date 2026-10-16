@@ -50,8 +50,13 @@ def _dep_ok(param: dict[str, Any], values: dict[str, Any]) -> bool:
 
 def coerce(param: dict[str, Any], value: Any) -> Any:
     t = param["type"]
-    if t == "int":
-        return int(value)
+    if t in {"int", "duration"}:
+        if isinstance(value, bool):
+            raise ValueError("不是整数")
+        f = float(value)
+        if not f.is_integer():
+            raise ValueError("必须是整数")
+        return int(f)
     if t in {"float", "percent"}:
         return float(value)
     if t == "bool":
@@ -62,8 +67,6 @@ def coerce(param: dict[str, Any], value: Any) -> Any:
         if not isinstance(value, list):
             raise SchemaError("必须是数组", 40002, param.get("key"))
         return [str(v) for v in value]
-    if t == "duration":
-        return int(value)
     return str(value) if not isinstance(value, (dict, list)) else value
 
 

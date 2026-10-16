@@ -343,7 +343,7 @@ class BindingIn(BaseModel):
     scope: str
     scope_id: int | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
-    priority: int | None = None
+    priority: int | None = Field(None, ge=0, le=10000)
     enabled: bool = True
 
 
@@ -405,7 +405,7 @@ async def create_binding(body: BindingIn, ctx: Ctx = Depends(current)):
 
 class BindingPatch(BaseModel):
     settings: dict[str, Any] | None = None
-    priority: int | None = None
+    priority: int | None = Field(None, ge=0, le=10000)
     enabled: bool | None = None
 
 
@@ -550,7 +550,7 @@ async def admin_all_bindings(ctx: Ctx = Depends(admin), pg: Page = Depends(pagin
 class GlobalBindingIn(BaseModel):
     plugin_id: str
     settings: dict[str, Any] = Field(default_factory=dict)
-    priority: int | None = None
+    priority: int | None = Field(None, ge=0, le=10000)
     enabled: bool = True
 
 

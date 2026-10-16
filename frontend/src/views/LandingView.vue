@@ -75,7 +75,7 @@ const features = computed(() => [1, 2, 3, 4].map((i) => ({ t: t(`landing.s${i}_t
         </template>
         <template v-else>
           <router-link to="/login" class="btn btn-ghost">{{ t('landing.nav_login') }}</router-link>
-          <router-link v-if="allowRegister" to="/register" class="btn btn-solid hide-xs">{{ t('landing.nav_register') }}</router-link>
+          <router-link v-if="allowRegister" to="/register" class="btn btn-solid">{{ t('landing.nav_register') }}</router-link>
         </template>
       </nav>
     </header>
@@ -221,7 +221,7 @@ const features = computed(() => [1, 2, 3, 4].map((i) => ({ t: t(`landing.s${i}_t
   .feat:nth-child(2n) { border-right: 0; }
 }
 @media (max-width: 560px) {
-  .hide-xs { display: none; }
+  .lp-nav .btn { padding-left: 12px; padding-right: 12px; }
   .hero { padding-top: 20px; }
   .hero-title { font-size: clamp(44px, 13vw, 64px); }
   .hero-cta .btn { flex: 1 1 100%; }

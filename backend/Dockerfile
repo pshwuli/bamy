@@ -22,9 +22,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     APP_HOST=0.0.0.0 \
     APP_PORT=8000
 
-# libpq5: asyncpg/psycopg 的本地库；tzdata: 时区；curl: 健康检查
+# libpq5: asyncpg/psycopg 的本地库；tzdata: 时区；curl: 健康检查；
+# postgresql-client: 后台"手动备份"用 pg_dump（trixie 自带 17，可向下兼容导出 PG 16）
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 tzdata curl \
+    && apt-get install -y --no-install-recommends libpq5 tzdata curl postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # 非 root 用户，uid/gid 固定，便于宿主机卷挂载后 chown

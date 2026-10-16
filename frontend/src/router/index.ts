@@ -49,6 +49,7 @@ const userRoutes: RouteRecordRaw[] = [
   { path: 'paper', component: () => import('@/views/user/PaperView.vue'), meta: { title: 'nav.paper' } },
   { path: 'audit', component: () => import('@/views/user/AuditView.vue'), meta: { title: 'nav.audit' } },
   { path: 'settings', component: () => import('@/views/user/SettingsView.vue'), meta: { title: 'nav.settings' } },
+  { path: 'risk-rules', component: () => import('@/views/user/RiskRulesView.vue'), meta: { title: 'nav.riskRules' } },
 ]
 
 const adminRoutes: RouteRecordRaw[] = [

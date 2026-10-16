@@ -71,6 +71,23 @@ def new_totp_secret() -> str:
     return pyotp.random_base32()
 
 
+_used_totp: dict[tuple[str, str], float] = {}
+
+
+def verify_totp_once(secret: str, code: str, user_key: str) -> bool:
+    """校验 TOTP 并防重放：同一用户的同一个码，在有效窗口（±1 个 30 秒步长）内只能用一次。"""
+    if not verify_totp(secret, code):
+        return False
+    now = time.time()
+    for k in [k for k, t in _used_totp.items() if now - t > 120]:
+        _used_totp.pop(k, None)
+    key = (user_key, str(code).strip())
+    if key in _used_totp:
+        return False
+    _used_totp[key] = now
+    return True
+
+
 def verify_totp(secret: str, code: str) -> bool:
     if not secret or not code:
         return False

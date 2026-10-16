@@ -1,10 +1,24 @@
 import { usePrefs } from '@/stores/prefs'
 
+const validTz = new Map<string, boolean>()
+function isValidTz(tz: string): boolean {
+  if (!validTz.has(tz)) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz })
+      validTz.set(tz, true)
+    } catch {
+      validTz.set(tz, false)
+    }
+  }
+  return validTz.get(tz)!
+}
+
 function tzOption(): string | undefined {
   try {
     const p = usePrefs()
     if (p.timezone === 'local') return undefined
-    return p.timezone
+    // 存了非法时区（旧数据）时退回北京时间，避免 toLocaleString 抛 RangeError 让整页白屏
+    return p.timezone && isValidTz(p.timezone) ? p.timezone : 'Asia/Shanghai'
   } catch {
     return 'Asia/Shanghai'
   }
@@ -112,4 +126,13 @@ export async function copyText(text: string): Promise<boolean> {
     ta.remove()
     return ok
   }
+}
+
+/** 交易对显示：扫描实例显示"全市场"，合约去掉 :USDT 后缀并标"永续" */
+export function fmtSymbol(sym: string | null | undefined, zh = true): string {
+  if (!sym) return '-'
+  if (sym === 'ALL/USDT') return zh ? '全市场 · 现货' : 'All · spot'
+  if (sym === 'ALL/USDT:USDT') return zh ? '全市场 · 合约' : 'All · perp'
+  if (sym.endsWith(':USDT')) return `${sym.slice(0, -5)} ${zh ? '永续' : 'perp'}`
+  return sym
 }

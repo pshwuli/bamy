@@ -14,7 +14,7 @@ import { useTable } from '@/composables/useTable'
 import { useLive } from '@/composables/useLive'
 import { confirm } from '@/composables/useConfirm'
 import { attempt, handleError } from '@/composables/useErrors'
-import { fmtDuration, fmtMoney, fmtPct, fmtTime, pnlClass, sinceSeconds } from '@/utils/format'
+import { fmtDuration, fmtMoney, fmtPct, fmtTime, pnlClass, sinceSeconds, fmtSymbol } from '@/utils/format'
 import { mergeValues } from '@/utils/schema'
 import PageHeader from '@/components/PageHeader.vue'
 import FilterBar from '@/components/FilterBar.vue'
@@ -308,7 +308,7 @@ function onReset() {
             <StatusBadge kind="instance" :value="row.status" />
           </router-link>
           <router-link :to="`/instances/${row.id}`" class="ic-mid">
-            <span class="ic-meta">{{ row.symbol }} · {{ row.strategy_name || row.strategy_id }} · {{ row.paper ? t('common.paper') : t('common.live') }}</span>
+            <span class="ic-meta">{{ fmtSymbol(row.symbol) }} · {{ row.strategy_name || row.strategy_id }} · {{ row.paper ? t('common.paper') : t('common.live') }}</span>
             <span class="ic-figs">
               <span class="num ic-eq">{{ fmtMoney(row.equity) }}</span>
               <span class="num" :class="pnlClass(returnRate(row))">{{ fmtPct(returnRate(row)) }}</span>
@@ -343,7 +343,7 @@ function onReset() {
           <el-table-column :label="t('instance.strategy')" min-width="120" show-overflow-tooltip>
             <template #default="{ row }">{{ row.strategy_name || row.strategy_id }}</template>
           </el-table-column>
-          <el-table-column prop="symbol" :label="t('instance.symbol')" min-width="100" />
+          <el-table-column :label="t('instance.symbol')" min-width="100"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
           <el-table-column :label="t('instance.account')" min-width="110" show-overflow-tooltip>
             <template #default="{ row }">{{ row.paper ? t('common.paper') : row.account_name || (row.account_id ? `#${row.account_id}` : '-') }}</template>
           </el-table-column>

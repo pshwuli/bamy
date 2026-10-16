@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Order, OrderStatus, Row } from '@/api/types'
-import { fmtNum, fmtTime } from '@/utils/format'
+import { fmtNum, fmtTime, fmtSymbol } from '@/utils/format'
 import StatusBadge from './StatusBadge.vue'
 import OrderDetailDialog from './OrderDetailDialog.vue'
 
@@ -33,7 +33,7 @@ const src = (s?: string) => (s && te(`source.${s}`) ? t(`source.${s}`) : s || '-
     <el-table-column v-if="showInstance" :label="t('order.instance')" min-width="120" show-overflow-tooltip>
       <template #default="{ row }"><router-link :to="`/instances/${row.instance_id}`">{{ row.instance_name || `#${row.instance_id}` }}</router-link></template>
     </el-table-column>
-    <el-table-column prop="symbol" :label="t('order.symbol')" min-width="100" />
+    <el-table-column :label="t('order.symbol')" min-width="100"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
     <el-table-column :label="t('order.side')" width="70">
       <template #default="{ row }"><span :class="row.side === 'buy' ? 'pnl-up' : 'pnl-down'">{{ t(`side.${row.side}`) }}</span></template>
     </el-table-column>

@@ -18,7 +18,7 @@ from bamy.core.errors import ApiError
 from bamy.core.response import ok, paginated
 from bamy.core.security import (
     create_access_token, create_refresh_token, decode_token, gen_recovery_codes, hash_password, in_seconds,
-    new_totp_secret, totp_uri, verify_password, verify_totp,
+    new_totp_secret, totp_uri, verify_password, verify_totp, verify_totp_once,
 )
 from bamy.db.models import ApiToken, InviteCode, InviteUsage, RefreshToken, User, UserPreference, UserSession
 from bamy.db.session import get_session
@@ -47,13 +47,16 @@ def _check_password(pw: str) -> None:
 
 
 async def _issue(db: AsyncSession, user: User, request: Request) -> dict:
-    access = create_access_token(user.id, user.role)
+    """签发一对 token。access 里带会话 id（sid）：会话被撤销后，access 也立即失效，不必等 30 分钟过期。"""
     refresh = create_refresh_token(user.id)
     ua = request.headers.get("user-agent")
     db.add(RefreshToken(user_id=user.id, token_hash=hmac_token(refresh), device_info=(ua or "")[:255],
                         ip=_ip(request), expires_at=in_seconds(settings.refresh_token_expire)))
-    db.add(UserSession(user_id=user.id, session_token=hmac_token(refresh)[:128], ip=_ip(request), user_agent=ua,
-                       expires_at=in_seconds(settings.refresh_token_expire)))
+    sess = UserSession(user_id=user.id, session_token=hmac_token(refresh)[:128], ip=_ip(request), user_agent=ua,
+                       expires_at=in_seconds(settings.refresh_token_expire))
+    db.add(sess)
+    await db.flush()
+    access = create_access_token(user.id, user.role, {"sid": sess.id})
     await db.commit()
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer",
             "expires_in": settings.access_token_expire,
@@ -173,7 +176,7 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
         code = (body.two_factor_code or "").strip()
         if not code:
             raise ApiError(40108)
-        if not verify_totp(decrypt(user.two_factor_secret or ""), code):
+        if not verify_totp_once(decrypt(user.two_factor_secret or ""), code, f"u{user.id}"):
             codes = json.loads(decrypt(user.recovery_codes or "") or "[]")
             if code in codes:
                 codes.remove(code)
@@ -238,13 +241,15 @@ async def logout(body: LogoutIn, ctx: Ctx = Depends(current)):
         await ctx.db.execute(update(RefreshToken).where(RefreshToken.token_hash == h).values(revoked_at=now))
         await ctx.db.execute(update(UserSession).where(UserSession.session_token == h[:128]).values(revoked_at=now))
     else:
-        latest = (await ctx.db.execute(select(RefreshToken).where(
-            RefreshToken.user_id == ctx.user.id, RefreshToken.revoked_at.is_(None))
-            .order_by(RefreshToken.created_at.desc()).limit(1))).scalar_one_or_none()
-        if latest is not None:
-            latest.revoked_at = now
-            await ctx.db.execute(update(UserSession).where(UserSession.session_token == latest.token_hash[:128])
-                                 .values(revoked_at=now))
+        # 只撤当前设备：access 里的 sid 指向本会话；旧版 access 没有 sid 时什么都不撤（而不是误撤别的设备）
+        sid = getattr(ctx.request.state, "session_id", None)
+        if sid is not None:
+            sess = await ctx.db.get(UserSession, int(sid))
+            if sess is not None and sess.user_id == ctx.user.id:
+                sess.revoked_at = now
+                await ctx.db.execute(update(RefreshToken).where(
+                    RefreshToken.user_id == ctx.user.id, RefreshToken.revoked_at.is_(None),
+                    func.substr(RefreshToken.token_hash, 1, 128) == sess.session_token).values(revoked_at=now))
     await ctx.db.commit()
     await write_audit(ctx.db, action="user.logout", target_type="user", target_id=ctx.user.id, **ctx.audit_kw(),
                       new_value={"all_devices": body.all_devices})
@@ -424,6 +429,8 @@ class TokenIn(BaseModel):
 
 @router.post("/api/user/api-tokens")
 async def create_token(body: TokenIn, ctx: Ctx = Depends(current)):
+    if body.expires_at is not None and body.expires_at.replace(tzinfo=None) <= datetime.utcnow():
+        raise ApiError(40003, "过期时间必须晚于现在", errors=[{"field": "expires_at", "reason": "必须是将来的时间"}])
     if body.scope not in {"read", "write", "admin"}:
         raise ApiError(40003, "scope 必须是 read / write / admin")
     if body.scope == "admin" and not ctx.is_admin:
@@ -501,12 +508,30 @@ class NotifyIn(BaseModel):
 
 @router.patch("/api/user/notification-settings")
 async def set_notify(body: NotifyIn, ctx: Ctx = Depends(current)):
-    if body.webhook_url and not body.webhook_url.startswith(("https://", "http://")):
-        raise ApiError(40003, "Webhook 地址必须是 http(s) URL")
+    if body.webhook_url:
+        if not body.webhook_url.startswith(("https://", "http://")) or len(body.webhook_url) > 500:
+            raise ApiError(40003, "Webhook 地址必须是 http(s) URL")
+        from bamy.plugin import RestrictedHttp
+        from urllib.parse import urlsplit
+
+        try:   # 保存时就拒绝内网/回环地址，而不是等到投递时静默失败
+            await RestrictedHttp([urlsplit(body.webhook_url).hostname or ""])._check_resolved(
+                urlsplit(body.webhook_url).hostname or "", urlsplit(body.webhook_url).port or 443)
+        except PermissionError as exc:
+            raise ApiError(40003, f"Webhook 地址不可用：{exc}") from exc
+    if body.event_types is not None:
+        from bamy.engine.runtime import NOTIFY_EVENTS
+
+        bad = [e for e in body.event_types if e not in NOTIFY_EVENTS]
+        if bad:
+            raise ApiError(40003, f"不支持的事件类型：{', '.join(bad)}")
     row = await _prefs(ctx)
     data = NOTIFY_DEFAULT | json.loads(row.notification_settings or "{}") | body.model_dump(exclude_none=True)
     row.notification_settings = json.dumps(data, ensure_ascii=False)
     await ctx.db.commit()
+    from bamy.services import webhook
+
+    webhook.invalidate(ctx.user.id)
     return ok(data)
 
 
@@ -530,6 +555,17 @@ async def set_prefs(body: PrefIn, ctx: Ctx = Depends(current)):
         raise ApiError(40003, "theme 取值 light/dark/auto")
     if body.language and body.language not in {"zh-CN", "en-US"}:
         raise ApiError(40003, "language 取值 zh-CN/en-US")
+    if body.time_format and body.time_format not in {"24h", "12h"}:
+        raise ApiError(40003, "time_format 取值 24h/12h")
+    if body.timezone:
+        # 前端用 Intl 按这个时区格式化时间，非法值会让页面抛 RangeError，必须在入库前拒绝
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        if body.timezone not in {"UTC", "local"}:
+            try:
+                ZoneInfo(body.timezone)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ApiError(40003, f"无效的时区：{body.timezone}") from exc
     row = await _prefs(ctx)
     data = PREF_DEFAULT | json.loads(row.preferences or "{}") | body.model_dump(exclude_none=True)
     row.preferences = json.dumps(data, ensure_ascii=False)

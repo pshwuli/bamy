@@ -14,6 +14,7 @@ import { setHttpHooks, ApiError } from './api/http'
 import { useAuth } from './stores/auth'
 import { usePrefs } from './stores/prefs'
 import { useRealtime } from './stores/realtime'
+import { useNotifications } from './stores/notifications'
 import { handleError } from './composables/useErrors'
 
 const app = createApp(App)
@@ -46,10 +47,15 @@ watch(
   () => [auth.loggedIn, auth.isAdmin] as const,
   ([loggedIn, admin]) => {
     const rt = useRealtime()
+    const notes = useNotifications()
     if (loggedIn) {
       rt.start(admin)
       void prefs.pull()
-    } else rt.stop()
+      void notes.load()
+    } else {
+      rt.stop()
+      notes.clear()   // 换账号登录时不留上一个人的通知
+    }
   },
   { immediate: true },
 )

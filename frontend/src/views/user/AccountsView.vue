@@ -41,7 +41,7 @@ function envLabel(env: string) {
   return env === 'mainnet' || env === 'testnet' ? t(`env.${env}`) : env
 }
 function marketLabel(m: string) {
-  return m === 'spot' ? t('market.spot') : m
+  return m === 'spot' ? t('market.spot') : m === 'futures' ? t('mkt.futures') : m
 }
 
 const keyRules = () => [req(), { pattern: KEY_RE, message: t('account.keyFormat'), trigger: ['blur', 'change'] }]
@@ -66,7 +66,7 @@ async function submitCreate() {
   createSaving.value = true
   createErrs.value = {}
   try {
-    const r = (await accountsApi.create({ ...createForm, market_type: 'spot', remark: createForm.remark || undefined })) as Account & { can_withdraw?: boolean }
+    const r = (await accountsApi.create({ ...createForm, remark: createForm.remark || undefined })) as Account & { can_withdraw?: boolean }
     createOpen.value = false
     ElMessage.success(t('common.success'))
     if (r?.can_withdraw) ElMessage({ type: 'warning', message: t('account.withdrawWarn'), duration: 6000 })
@@ -99,7 +99,7 @@ function normalize(o: Record<string, unknown>): AccountInput {
     api_key: String(o.api_key ?? '').trim(),
     api_secret: String(o.api_secret ?? '').trim(),
     env: String(o.env ?? '').trim() || 'mainnet',
-    market_type: 'spot',
+    market_type: String(o.market_type ?? '').trim() === 'futures' ? 'futures' : 'spot',
     readonly: toBool(o.readonly),
     ...(remark ? { remark } : {}),
   }
@@ -363,6 +363,7 @@ async function doDelete(a: Account) {
       </el-select>
       <el-select v-model="filters.market_type" :placeholder="t('account.market')" :aria-label="t('account.market')" clearable @change="search">
         <el-option value="spot" :label="t('market.spot')" />
+        <el-option value="futures" :label="t('mkt.futures')" />
       </el-select>
     </FilterBar>
 
@@ -445,8 +446,9 @@ async function doDelete(a: Account) {
           </el-radio-group>
         </el-form-item>
         <el-form-item :label="t('account.market')">
-          <el-select v-model="createForm.market_type" disabled :aria-label="t('account.market')">
+          <el-select v-model="createForm.market_type" :aria-label="t('account.market')">
             <el-option value="spot" :label="t('market.spot')" />
+            <el-option value="futures" :label="t('mkt.futures')" />
           </el-select>
         </el-form-item>
         <el-form-item :label="t('account.readonly')">

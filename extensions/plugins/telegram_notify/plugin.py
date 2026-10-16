@@ -21,6 +21,12 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _data(event: Any) -> Any:
+    """订阅型处理函数收到的是 {"event", "data", "ts"}，业务字段在 data 里。"""
+    data = _get(event, "data")
+    return data if isinstance(data, dict) else event
+
+
 class TelegramNotify(BasePlugin):
     """Telegram 通知插件。"""
 
@@ -36,17 +42,19 @@ class TelegramNotify(BasePlugin):
 
     # ---- 订阅型 ----
     async def on_alert(self, event: Any) -> None:
-        level = str(_get(event, "level", "warn"))
-        await self._send(level, f"[告警] {_get(event, 'title', '')}\n{_get(event, 'message', '')}")
+        d = _data(event)
+        level = str(_get(d, "level", "warn"))
+        await self._send(level, f"[告警] {_get(d, 'title', '')}\n{_get(d, 'message', '')}")
 
     async def on_filled(self, event: Any) -> None:
-        order = _get(event, "order", event)
+        order = _data(event)
         text = (f"[成交] {_get(order, 'symbol', '')} {_get(order, 'side', '')} "
                 f"{_get(order, 'filled_amount', _get(order, 'amount', ''))} @ {_get(order, 'filled_price', '')}")
         await self._send("info", text)
 
     async def on_auto_stopped(self, event: Any) -> None:
-        text = f"[实例自动停止] #{_get(event, 'instance_id', '')} 原因：{_get(event, 'reason', '未知')}"
+        d = _data(event)
+        text = f"[实例自动停止] #{_get(d, 'instance_id', '')} 原因：{_get(d, 'reason', '未知')}"
         await self._send("error", text)
 
     # ---- 拦截型 ----

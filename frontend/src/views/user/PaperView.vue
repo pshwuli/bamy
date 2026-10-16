@@ -8,7 +8,7 @@ import { instancesApi } from '@/api/instances'
 import { paperApi } from '@/api/orders'
 import type { Instance, Query, Row } from '@/api/types'
 import { useTable } from '@/composables/useTable'
-import { fmtDuration, fmtMoney, fmtNum, fmtPct, pnlClass } from '@/utils/format'
+import { fmtDuration, fmtMoney, fmtNum, fmtPct, pnlClass, fmtSymbol } from '@/utils/format'
 import PageHeader from '@/components/PageHeader.vue'
 import Pager from '@/components/Pager.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -211,7 +211,7 @@ onMounted(async () => {
           <el-table-column :label="t('instance.strategy')" min-width="120" show-overflow-tooltip>
             <template #default="{ row }">{{ row.strategy_name || row.strategy_id }}</template>
           </el-table-column>
-          <el-table-column prop="symbol" :label="t('instance.symbol')" min-width="100" />
+          <el-table-column :label="t('instance.symbol')" min-width="100"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
           <el-table-column :label="t('common.status')" width="100">
             <template #default="{ row }"><StatusBadge kind="instance" :value="row.status" /></template>
           </el-table-column>
@@ -256,7 +256,7 @@ onMounted(async () => {
           :aria-label="t('paper.select')"
           class="cmp-select"
         >
-          <el-option v-for="i in candidates" :key="i.id" :value="i.id" :label="`${i.name} · ${i.symbol} · ${i.paper ? t('common.paper') : t('common.live')}`" />
+          <el-option v-for="i in candidates" :key="i.id" :value="i.id" :label="`${i.name} · ${fmtSymbol(i.symbol)} · ${i.paper ? t('common.paper') : t('common.live')}`" />
         </el-select>
         <el-radio-group v-model="mode" size="small" :aria-label="t('paper.metrics')">
           <el-radio-button value="absolute">{{ t('paper.absolute') }}</el-radio-button>
@@ -310,7 +310,7 @@ onMounted(async () => {
             </template>
           </el-table-column>
           <el-table-column prop="strategy" :label="t('instance.strategy')" min-width="110" show-overflow-tooltip />
-          <el-table-column prop="symbol" :label="t('instance.symbol')" min-width="100" />
+          <el-table-column :label="t('instance.symbol')" min-width="100"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
           <el-table-column :label="t('paper.initial')" min-width="100" align="right"><template #default="{ row }">{{ fmtMoney(row.initial_balance) }}</template></el-table-column>
           <el-table-column :label="t('paper.current')" min-width="100" align="right"><template #default="{ row }">{{ fmtMoney(row.equity) }}</template></el-table-column>
           <el-table-column :label="t('paper.totalReturn')" min-width="90" align="right">

@@ -9,7 +9,7 @@ import { viewApi, type ViewData } from '@/api/view'
 import type { LogEntry, Order, Position, Row } from '@/api/types'
 import { describeError } from '@/composables/useErrors'
 import { RealtimeSocket, wsUrl } from '@/utils/socket'
-import { fmtMoney, fmtNum, fmtPct, fmtTime, pnlClass } from '@/utils/format'
+import { fmtMoney, fmtNum, fmtPct, fmtTime, pnlClass, fmtSymbol } from '@/utils/format'
 import StatCard from '@/components/StatCard.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import LineChart from '@/components/LineChart.vue'
@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
           <h1 class="sv-title">{{ data.instance_name }}</h1>
           <div class="sv-meta">
             <span>{{ t('instance.strategy') }}：{{ data.strategy_name || '-' }}</span>
-            <span>{{ t('instance.symbol') }}：{{ data.symbol }}</span>
+            <span>{{ t('instance.symbol') }}：{{ fmtSymbol(data.symbol) }}</span>
             <el-tag size="small" :type="data.paper ? 'info' : 'warning'" effect="plain" disable-transitions>{{ data.paper ? t('common.paper') : t('common.live') }}</el-tag>
             <StatusBadge v-if="data.status" kind="instance" :value="data.status" />
             <el-tag size="small" type="info" disable-transitions>{{ t('view.readonly') }}</el-tag>
@@ -175,7 +175,7 @@ onBeforeUnmount(() => {
         <section v-if="positions" class="card">
           <h2 class="card-title">{{ t('view.positions') }}</h2>
           <el-table :data="positions" size="small" stripe class="resp-table">
-            <el-table-column prop="symbol" :label="t('instance.symbol')" min-width="100" />
+            <el-table-column :label="t('instance.symbol')" min-width="100"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
             <el-table-column :label="t('instance.side')" width="70"><template #default="{ row }">{{ te(`side.${row.side}`) ? t(`side.${row.side}`) : row.side }}</template></el-table-column>
             <el-table-column :label="t('instance.amount')" min-width="100" align="right"><template #default="{ row }">{{ fmtNum(row.amount, 8) }}</template></el-table-column>
             <el-table-column :label="t('instance.entryPrice')" min-width="100" align="right"><template #default="{ row }">{{ fmtNum(row.entry_price, 8) }}</template></el-table-column>

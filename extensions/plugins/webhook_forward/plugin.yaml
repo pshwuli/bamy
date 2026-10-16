@@ -1,0 +1,100 @@
+kind: plugin
+
+id: webhook_forward
+name: Webhook 转发
+version: 1.0.0
+author: bamy
+description: >-
+  把你勾选的事件（成交、拒单、出错、自动停止、风控触发……）原样转发到任意公网 Webhook，
+  方便接自己的程序、表格或机器人。格式可选通用 JSON 或飞书 / 钉钉 / 企业微信文本。
+tags: [notify, integration]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [user, account, global]
+default_scope: user
+allow_multiple: true
+
+data_scope: own
+
+priority: 100
+
+network:
+  enabled: true
+  hosts:
+    - "*"
+  timeout_ms: 5000
+
+hooks:
+  - event: order.filled
+    handler: on_event
+  - event: order.rejected
+    handler: on_event
+  - event: order.failed
+    handler: on_event
+  - event: position.changed
+    handler: on_event
+  - event: instance.error
+    handler: on_event
+  - event: instance.auto_stopped
+    handler: on_event
+  - event: risk.breached
+    handler: on_event
+  - event: risk.circuit_break
+    handler: on_event
+  - event: account.invalid
+    handler: on_event
+  - event: guard.missing
+    handler: on_event
+  - event: system.alert
+    handler: on_event
+
+settings:
+  - key: url
+    label: Webhook 地址
+    type: secret
+    required: true
+    help: 只允许公网 http(s) 地址（内网、本机地址会被拒绝）
+    group: 目标
+
+  - key: format
+    label: 格式
+    type: select
+    default: json
+    options:
+      - { value: json, label: "通用 JSON：{event, data, ts}" }
+      - { value: feishu, label: 飞书群机器人文本 }
+      - { value: dingtalk, label: 钉钉群机器人文本 }
+      - { value: wecom, label: 企业微信群机器人文本 }
+    group: 目标
+
+  - key: events
+    label: 转发哪些事件
+    type: multiselect
+    default: [order.filled, instance.error, instance.auto_stopped, risk.breached]
+    options:
+      - { value: order.filled, label: 成交 }
+      - { value: order.rejected, label: 拒单 }
+      - { value: order.failed, label: 下单失败 }
+      - { value: position.changed, label: 持仓变化 }
+      - { value: instance.error, label: 实例出错 }
+      - { value: instance.auto_stopped, label: 实例自动停止 }
+      - { value: risk.breached, label: 风控触发（含强平） }
+      - { value: risk.circuit_break, label: 熔断 }
+      - { value: account.invalid, label: 账号失效 }
+      - { value: guard.missing, label: 保护单丢失 }
+      - { value: system.alert, label: 系统告警 }
+    group: 事件
+
+  - key: rate_limit
+    label: 每分钟最多转发
+    type: int
+    default: 30
+    min: 1
+    max: 120
+    group: 事件
+
+dependencies:
+  python: ">=3.11"
+  packages:
+    - httpx>=0.25.0

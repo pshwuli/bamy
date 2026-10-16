@@ -1,0 +1,193 @@
+kind: strategy
+
+id: market_scanner
+name: 全市场动量扫描
+version: 1.0.0
+author: bamy
+description: >-
+  一个实例扫描币安全部 USDT 交易对，只买"短时间暴涨、而且还贴着高点"的币：
+  先按成交额粗筛，再看近 4 小时涨幅和离 4 小时最高价的距离，满足条件才开仓。
+  出场：浮盈先摸到 +4%，之后从最高点回撤 3% 止盈；亏到 -4% 止损；最长拿 48 小时。
+  同一个币平仓后冷却 3 小时。现货只做多；U 本位合约可以只做多、只做空或双向。
+  默认参数就是你给的原规则（4h 涨幅 ≥20%、距 4h 高 ≥-5%、成交额 ≥500 万 U）。
+  注意：原规则没有做过回测优化，按我们之前粗测的经验胜率大约 30%，靠少数大涨的单子赚钱，
+  连续止损很常见。请先用模拟盘跑一段时间再决定是否上实盘。
+tags: [全市场, 扫描, 动量, 追涨, 移动止盈, 现货, 合约]
+min_bamy_version: 1.0.0
+license: MIT
+
+capabilities:
+  close_position: true
+  close_positions: true
+  close_all: true
+  close_partial: false
+  cancel_order: false
+  cancel_all: false
+  list_positions: true
+  pause: true
+  resume: true
+  reset: false
+
+params:
+  - key: min_quote_volume
+    label: 粗筛：24h 成交额下限（万 U）
+    type: float
+    default: 500
+    min: 10
+    max: 100000
+    help: 24 小时成交额低于这个数的币直接不看。小币滑点大、容易被操纵，建议不低于 300 万 U。
+    group: 选币
+
+  - key: min_change_pct
+    label: 细筛：近 N 小时涨幅 ≥（%）
+    type: float
+    default: 20
+    min: 1
+    max: 200
+    help: 近 N 小时（下方"窗口"）涨幅达到多少才算动量够强。做空方向时表示跌幅。
+    group: 选币
+
+  - key: max_from_high_pct
+    label: 细筛：距窗口最高价 ≥（%，负数）
+    type: float
+    default: -5
+    min: -50
+    max: 0
+    help: 当前价离窗口内最高价的距离，-5 表示最多比最高价低 5%。越接近 0 越"贴着高点"。做空时表示离最低价的距离。
+    group: 选币
+
+  - key: window
+    label: 窗口
+    type: select
+    default: 4h
+    options:
+      - { value: 1h, label: 1 小时 }
+      - { value: 2h, label: 2 小时 }
+      - { value: 4h, label: 4 小时（原规则） }
+      - { value: 6h, label: 6 小时 }
+      - { value: 12h, label: 12 小时 }
+      - { value: 1d, label: 24 小时 }
+    group: 选币
+
+  - key: direction
+    label: 方向（仅合约有效）
+    type: select
+    default: long
+    options:
+      - { value: long, label: 只做多（追涨） }
+      - { value: short, label: 只做空（追跌） }
+      - { value: both, label: 双向 }
+    help: 现货实例永远只做多。
+    group: 选币
+
+  - key: exclude
+    label: 排除的币（逗号分隔）
+    type: string
+    default: ""
+    max_length: 500
+    help: 例如 "BTC,ETH"。稳定币（USDC、FDUSD 等）和杠杆代币（UP/DOWN/BULL/BEAR）已经自动排除。
+    group: 选币
+
+  - key: slots
+    label: 槽位（最多同时持有几个币）
+    type: int
+    default: 1
+    min: 1
+    max: 10
+    help: 原规则 1 个。槽位越多越分散，单个币的仓位越小。
+    group: 资金
+
+  - key: position_pct
+    label: 每个槽位投入（% 权益）
+    type: percent
+    default: 95
+    min: 1
+    max: 100
+    help: 每开一个仓用当前权益的百分之几（合约是保证金）。槽位 >1 时建议设成 100/槽位 以下。
+    group: 资金
+
+  - key: leverage
+    label: 杠杆（仅合约）
+    type: int
+    default: 1
+    min: 1
+    max: 20
+    help: 合约杠杆倍数，逐仓。追涨类策略波动大，强烈建议 1–3 倍；风控默认上限 5 倍。
+    group: 资金
+
+  - key: arm_pct
+    label: 止盈：浮盈先摸到（%）
+    type: float
+    default: 4
+    min: 0.5
+    max: 100
+    help: 浮盈第一次达到这个比例后才开始跟踪回撤（原规则"摸 +4%"）。
+    group: 出场
+
+  - key: trail_pct
+    label: 止盈：从最高点回撤（%）
+    type: float
+    default: 3
+    min: 0.3
+    max: 50
+    help: 摸到上面的浮盈后，价格从持仓期间最高点回撤这么多就平仓（原规则"回撤 3%"）。
+    group: 出场
+
+  - key: confirm_ticks
+    label: 止盈确认次数
+    type: int
+    default: 1
+    min: 1
+    max: 10
+    help: 回撤条件连续满足几次（每次约 1 秒）才平仓，防插针（原规则"1 次确认"）。
+    group: 出场
+
+  - key: stop_pct
+    label: 止损（%）
+    type: float
+    default: 4
+    min: 0.5
+    max: 50
+    help: 亏损达到这个比例立刻平仓（原规则 -4%）。合约按价格算，不是按保证金算。
+    group: 出场
+
+  - key: max_hold_hours
+    label: 到期平仓（小时）
+    type: float
+    default: 48
+    min: 1
+    max: 720
+    group: 出场
+
+  - key: cooldown_hours
+    label: 冷却（小时）
+    type: float
+    default: 3
+    min: 0
+    max: 168
+    help: 同一个币平仓后多久内不再买它。
+    group: 出场
+
+  - key: scan_seconds
+    label: 扫描间隔（秒）
+    type: int
+    default: 30
+    min: 10
+    max: 600
+    help: 多久扫一次全市场。持仓的止盈止损是每秒检查，不受这个影响。
+    group: 其他
+
+runtime:
+  tick_interval: 5
+  market_type: [spot, futures]
+  scan: true
+
+suitability:
+  capital:
+    min_usdt: 50
+    sweet_spot_usdt: [200, 50000]
+    note: >-
+      全部资金一次压在一个暴涨的小币上，单笔大于几万 U 时，成交额 500 万 U 的币滑点会很明显；
+      资金大时把成交额下限调高（例如 5000 万 U）或增加槽位分散。
+  market: 牛市、山寨币轮动行情最好；熊市和横盘时会频繁止损
+  symbols: 全部 USDT 交易对（自动排除稳定币和杠杆代币）

@@ -40,19 +40,26 @@ const form = reactive({
   fee_rate: 0.001,
   slippage: 0.0005,
   stop_action: 'keep',
+  market_type: 'spot' as 'spot' | 'futures',
+  leverage: 1,
 })
 const params = ref<Record<string, unknown>>({})
 const errs = ref<Record<string, string>>({})
 const saving = ref(false)
 
 const symbolOptions = computed(() => strategy.value?.runtime?.symbols ?? [])
-const onlineAccounts = computed(() => accounts.value.filter((a) => a.status === 'online' || a.status === 'active'))
+// 扫描类策略：不用选交易对，一个实例扫全部 USDT 交易对
+const isScan = computed(() => !!strategy.value?.runtime?.scan)
+const marketTypes = computed(() => strategy.value?.runtime?.market_type ?? ['spot'])
+const onlineAccounts = computed(() =>
+  accounts.value.filter((a) => (a.status === 'online' || a.status === 'active') && (a.market_type ?? 'spot') === form.market_type),
+)
 const loadedStrategies = computed(() => strategies.value.filter((s) => s.loaded !== false))
 
 const rules = computed<FormRules>(() => ({
   strategy_id: [req()],
   name: [req(), { min: 1, max: 64, trigger: ['blur', 'change'], message: t('schema.maxLength', { n: 64 }) }],
-  symbol: [req()],
+  symbol: isScan.value ? [] : [req()],
   account_id: form.paper ? [] : [req()],
   paper_balance: form.paper ? [req()] : [],
 }))
@@ -87,12 +94,22 @@ async function pickStrategy(id: string) {
     params.value = mergeValues(s.params_schema ?? [], {})
     const syms = s.runtime?.symbols ?? []
     if (syms.length && !syms.includes(form.symbol)) form.symbol = syms[0]
+    const types = s.runtime?.market_type ?? ['spot']
+    if (!types.includes(form.market_type)) form.market_type = (types[0] as 'spot' | 'futures') ?? 'spot'
+    // 参数里有杠杆时与实例杠杆保持一致
+    const lev = (s.params_schema ?? []).find((f) => f.key === 'leverage')
+    if (lev) form.leverage = Number(params.value.leverage ?? 1)
     if (!form.name) form.name = `${s.name}-${Date.now().toString(36).slice(-4)}`
   } catch {
     form.strategy_id = ''
   } finally {
     strategyLoading.value = false
   }
+}
+
+function withLeverage(v: Record<string, unknown>) {
+  if (form.market_type === 'futures' && 'leverage' in params.value) return { ...v, leverage: form.leverage }
+  return v
 }
 
 function errOf(k: string) {
@@ -108,12 +125,15 @@ async function submit() {
   const body: InstanceInput = {
     name: form.name.trim(),
     strategy_id: form.strategy_id,
-    symbol: form.symbol.trim().toUpperCase(),
+    symbol: isScan.value ? '' : form.symbol.trim().toUpperCase(),
+    market_type: form.market_type,
     paper: form.paper,
     account_id: form.paper ? null : form.account_id,
     paper_balance: form.paper ? form.paper_balance : null,
-    paper_config: form.paper ? { fee_rate: form.fee_rate, slippage: form.slippage } : null,
-    params: paramsRef.value ? paramsRef.value.values() : {},
+    paper_config: form.paper
+      ? { fee_rate: form.fee_rate, slippage: form.slippage, ...(form.market_type === 'futures' ? { leverage: form.leverage } : {}) }
+      : null,
+    params: withLeverage(paramsRef.value ? paramsRef.value.values() : {}),
     stop_action: form.stop_action,
   }
   try {
@@ -154,11 +174,30 @@ onMounted(init)
           <el-form-item :label="t('instance.name')" prop="name" :error="errOf('name')">
             <el-input v-model="form.name" maxlength="64" show-word-limit />
           </el-form-item>
-          <el-form-item :label="t('instance.symbol')" prop="symbol" :error="errOf('symbol')">
+          <el-form-item v-if="strategy" :label="t('mkt.type')" :error="errOf('market_type')">
+            <el-radio-group v-model="form.market_type">
+              <el-radio-button value="spot" :disabled="!marketTypes.includes('spot')">{{ t('mkt.spot') }}</el-radio-button>
+              <el-radio-button value="futures" :disabled="!marketTypes.includes('futures')">{{ t('mkt.futures') }}</el-radio-button>
+            </el-radio-group>
+            <div v-if="!marketTypes.includes('futures')" class="hint">{{ t('mkt.spotOnly') }}</div>
+          </el-form-item>
+          <el-form-item v-if="isScan" :label="t('mkt.scope')">
+            <div>
+              <b>{{ form.market_type === 'futures' ? t('mkt.scopeFutures') : t('mkt.scopeSpot') }}</b>
+              <div class="hint">{{ t('mkt.scopeHint') }}</div>
+            </div>
+          </el-form-item>
+          <el-form-item v-else :label="t('instance.symbol')" prop="symbol" :error="errOf('symbol')">
             <el-select v-if="symbolOptions.length" v-model="form.symbol" filterable style="width: 100%">
               <el-option v-for="s in symbolOptions" :key="s" :value="s" :label="s" />
             </el-select>
             <el-input v-else v-model="form.symbol" :placeholder="t('instx.symbolPh')" />
+            <div v-if="form.market_type === 'futures'" class="hint">{{ t('mkt.futSymbolHint') }}</div>
+          </el-form-item>
+          <el-form-item v-if="form.market_type === 'futures'" :label="t('mkt.leverage')" :error="errOf('paper_config.leverage')">
+            <el-input-number v-model="form.leverage" :min="1" :max="20" :step="1" controls-position="right" />
+            <span class="suffix">x · {{ t('mkt.isolated') }}</span>
+            <div class="hint">{{ t('mkt.leverageHint') }}</div>
           </el-form-item>
           <el-form-item :label="t('instance.mode')">
             <el-radio-group v-model="form.paper">

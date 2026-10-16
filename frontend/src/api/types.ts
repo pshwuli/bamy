@@ -108,6 +108,9 @@ export interface Position {
   unrealized_pnl?: number
   pnl_rate?: number
   label?: string
+  leverage?: number | null
+  margin?: number | null
+  liquidation_price?: number | null
 }
 
 export interface Order {
@@ -170,7 +173,7 @@ export interface Strategy {
   error?: string | null
   params_count?: number
   params_schema?: SchemaField[]
-  runtime?: { tick_interval?: number; symbols?: string[]; market_type?: string[] }
+  runtime?: { tick_interval?: number; symbols?: string[]; market_type?: string[]; scan?: boolean }
   dependencies?: Record<string, unknown>
   instance_count?: number
   suitability?: StrategySuitability | null

@@ -4,12 +4,13 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select, update
 
 from bamy.api.deps import Ctx, Page, current, iso, num, own_account, own_instance, paging
@@ -19,8 +20,9 @@ from bamy.core.response import csv_safe, ok, paginated
 from bamy.db.models import (
     Account, Instance, Order, PaperAccount, PaperSnapshot, PositionSnapshot, ShareToken, SystemLog,
 )
-from bamy.engine.market import market
+from bamy.engine.market import market, scan_symbol
 from bamy.engine.pluginhub import plugin_hub
+from bamy.engine.risk import risk_engine
 from bamy.engine.runtime import _jsonable, engine
 from bamy.extensions.registry import registry
 from bamy.extensions.schema import (SchemaError, encrypt_secrets, mask_secrets, merge_secrets, secret_keys,
@@ -137,16 +139,56 @@ async def get_instance(instance_id: int, ctx: Ctx = Depends(current)):
     return ok((await _out(ctx, [inst]))[0])
 
 
+# 模拟盘初始资金上限：Numeric(20, 8) 能存 10^12 量级；这里限 1 亿 USDT，足够覆盖大资金模拟
+PAPER_BALANCE_MAX = 100_000_000
+
+
+class PaperConfigIn(BaseModel):
+    """模拟盘撮合参数。负数会让手续费变成补贴、滑点变成白赚，必须拒绝。"""
+    model_config = {"extra": "forbid"}
+    fee_rate: float | None = Field(None, ge=0, le=0.01)
+    slippage: float | None = Field(None, ge=0, le=0.05)
+    limit_mode: str | None = Field(None, pattern="^(book|immediate)$")
+    quote_asset: str | None = Field(None, pattern="^USDT$")
+    leverage: int | None = Field(None, ge=1, le=20)     # 仅 U 本位合约
+
+
+def _normalize_symbol(raw: str, market_type: str, *, scan: bool) -> str:
+    """交易对规范化：扫描类策略固定 ALL/USDT(:USDT)；合约补 :USDT 后缀；统一大写。"""
+    if scan:
+        return scan_symbol(market_type)
+    sym = (raw or "").strip().upper()
+    if not sym or "/" not in sym:
+        raise ApiError(40003, "请填写交易对，例如 BTC/USDT")
+    if sym.startswith("ALL/"):
+        raise ApiError(40003, "只有全市场扫描类策略才能扫描全部交易对")
+    if market_type == "futures" and ":" not in sym:
+        sym = f"{sym}:USDT"
+    if market_type == "spot" and ":" in sym:
+        raise ApiError(40003, "现货交易对不能带 :USDT 后缀")
+    return sym
+
+
+def _clean_name(v: str) -> str:
+    v = (v or "").strip()
+    if not v:
+        raise ValueError("名称不能为空或只有空格")
+    return v
+
+
 class InstanceIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     strategy_id: str
-    symbol: str
-    account_id: int | None = None
+    symbol: str = ""                                    # 扫描类策略可不填，自动设为 ALL/USDT
+    market_type: str = Field("spot", pattern="^(spot|futures)$")
+    account_id: int | None = Field(None, ge=1)
     paper: bool = False
-    paper_balance: float | None = None
-    paper_config: dict[str, Any] | None = None
+    paper_balance: float | None = Field(None, gt=0, le=PAPER_BALANCE_MAX)
+    paper_config: PaperConfigIn | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     stop_action: str = "keep"
+
+    _n = field_validator("name")(classmethod(lambda cls, v: _clean_name(v)))
 
 
 @router.post("/api/instances")
@@ -167,12 +209,20 @@ async def create_instance(body: InstanceIn, ctx: Ctx = Depends(current)):
     if ext is None or not ext.loaded:
         raise ApiError(40402)
     runtime = ext.meta.get("runtime") or {}
-    if runtime.get("symbols") and body.symbol not in runtime["symbols"]:
+    if body.market_type not in (runtime.get("market_type") or ["spot"]):
+        raise ApiError(42224, "该策略不支持" + ("U 本位合约" if body.market_type == "futures" else "现货"))
+    symbol = _normalize_symbol(body.symbol, body.market_type, scan=bool(runtime.get("scan")))
+    if runtime.get("symbols") and symbol.split(":")[0] not in runtime["symbols"] and symbol not in runtime["symbols"]:
         raise ApiError(42231, "策略不支持该交易对")
-    if "spot" not in (runtime.get("market_type") or ["spot"]):
-        raise ApiError(42224)
-    if not await market.is_valid_symbol(body.symbol):
-        raise ApiError(42231)
+    if not await market.is_valid_symbol(symbol):
+        raise ApiError(42231, f"交易对 {symbol} 不存在或已下架")
+    if body.paper_config and body.paper_config.leverage and body.market_type != "futures":
+        raise ApiError(40003, "现货不能设杠杆")
+    if body.market_type == "futures":
+        cap = await risk_engine.max_leverage(ctx.user.id)
+        lev = (body.paper_config.leverage if body.paper_config else None) or 1
+        if lev > cap:
+            raise ApiError(42247, f"杠杆 {lev} 倍超过风控上限 {cap} 倍")
     account = None
     if body.paper:
         if not body.paper_balance or body.paper_balance <= 0:
@@ -186,22 +236,22 @@ async def create_instance(body: InstanceIn, ctx: Ctx = Depends(current)):
             raise ApiError(40906, f"账号状态为 {account.status}")
         if account.readonly:
             raise ApiError(40304, "只读账号不能创建实盘实例")
-        if account.market_type != "spot":
-            raise ApiError(42224)
+        if account.market_type != body.market_type:
+            raise ApiError(42224, "账号类型与实例市场类型不一致（现货账号不能跑合约）")
         per_acc = await ctx.db.scalar(select(func.count(Instance.id)).where(Instance.account_id == account.id,
                                                                             Instance.deleted_at.is_(None))) or 0
         if per_acc >= PER_ACCOUNT_MAX:
             raise ApiError(40907, f"每个账号最多绑定 {PER_ACCOUNT_MAX} 个实例")
         account_id = account.id
     params = _validate_params(ext, body.params)
-    view = {"id": None, "name": body.name, "symbol": body.symbol, "paper": body.paper, "owner_id": ctx.user.id,
+    view = {"id": None, "name": body.name, "symbol": symbol, "paper": body.paper, "owner_id": ctx.user.id,
             "account_id": account_id, "strategy_id": ext.id}
     params = await _params_checkpoint(view, params, ctx.user.id, account_id, ext)
     params = _validate_params(ext, params)
     inst = Instance(owner_id=ctx.user.id, name=body.name, account_id=account_id, strategy_id=ext.id,
-                    strategy_version=ext.version, symbol=body.symbol, market_type="spot", paper=body.paper,
+                    strategy_version=ext.version, symbol=symbol, market_type=body.market_type, paper=body.paper,
                     paper_balance=Decimal(str(body.paper_balance)) if body.paper else None,
-                    paper_config=json.dumps(body.paper_config) if body.paper_config else None,
+                    paper_config=json.dumps(body.paper_config.model_dump(exclude_none=True)) if body.paper_config else None,
                     params=_store(ext, params), status="created", stop_action=body.stop_action)
     ctx.db.add(inst)
     await ctx.db.commit()
@@ -216,7 +266,9 @@ class InstancePatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=64)
     params: dict[str, Any] | None = None
     stop_action: str | None = None
-    paper_config: dict[str, Any] | None = None
+    paper_config: PaperConfigIn | None = None
+
+    _n = field_validator("name")(classmethod(lambda cls, v: _clean_name(v) if v is not None else v))
 
 
 @router.patch("/api/instances/{instance_id}")
@@ -237,7 +289,15 @@ async def update_instance(instance_id: int, body: InstancePatch, ctx: Ctx = Depe
         if inst.status not in {"created", "stopped", "error"}:
             raise ApiError(40903, "运行中的实例不能改参数，请先停止")
     if body.paper_config is not None and inst.paper:
-        inst.paper_config = json.dumps(body.paper_config)
+        new_cfg = body.paper_config.model_dump(exclude_none=True)
+        if new_cfg.get("leverage"):
+            if inst.market_type != "futures":
+                raise ApiError(40003, "现货不能设杠杆")
+            cap = await risk_engine.max_leverage(inst.owner_id)
+            if new_cfg["leverage"] > cap:
+                raise ApiError(42247, f"杠杆 {new_cfg['leverage']} 倍超过风控上限 {cap} 倍")
+        inst.paper_config = json.dumps(json.loads(inst.paper_config or "{}") | new_cfg)
+        engine._books.pop(inst.id, None)   # 停止状态下改配置：下次加载按新配置
     if body.params is not None:
         ext = registry.get_strategy(inst.strategy_id)
         if ext is None or not ext.loaded:
@@ -322,7 +382,18 @@ async def instance_status(instance_id: int, ctx: Ctx = Depends(current)):
         equity = float(book.equity(await engine._prices(book)))
         balance = float(book.balance)
     tick = market.cached(inst.symbol)
-    return ok({"instance_id": inst.id, "status": inst.status,
+    strategy_status = None
+    raw = await engine.state_get(inst.id, "ui.status")
+    if raw:
+        try:
+            strategy_status = json.loads(raw)
+        except ValueError:
+            strategy_status = {"summary": raw}
+    await engine.flush_logs()
+    last_log = (await ctx.db.execute(select(SystemLog).where(SystemLog.instance_id == inst.id)
+                                     .order_by(SystemLog.id.desc()).limit(1))).scalar_one_or_none()
+    return ok({"instance_id": inst.id, "status": inst.status, "strategy_status": strategy_status,
+               "last_log": {"at": iso(last_log.timestamp), "message": last_log.message} if last_log else None,
                "running_since": iso(inst.last_started_at) if inst.status in {"running", "paused"} else None,
                "equity": equity, "balance": balance, "positions": positions,
                "last_tick_at": datetime.utcfromtimestamp(tick["received_at"]).isoformat() + "Z" if tick else None,
@@ -387,6 +458,10 @@ async def change_strategy(instance_id: int, body: ChangeStrategyIn, ctx: Ctx = D
     runtime = ext.meta.get("runtime") or {}
     if runtime.get("symbols") and inst.symbol not in runtime["symbols"]:
         raise ApiError(42231, "新策略不支持当前交易对")
+    if inst.market_type not in (runtime.get("market_type") or ["spot"]):
+        raise ApiError(42224, "新策略不支持当前市场类型")
+    if bool(runtime.get("scan")) != inst.symbol.startswith("ALL/"):
+        raise ApiError(42231, "扫描类策略与单币策略之间不能互换，请新建实例")
     open_orders = await ctx.db.scalar(select(func.count(Order.id)).where(
         Order.instance_id == inst.id, Order.status.in_(("submitted", "partial", "unknown")))) or 0
     if open_orders:
@@ -416,6 +491,12 @@ async def change_strategy(instance_id: int, body: ChangeStrategyIn, ctx: Ctx = D
     params = _validate_params(ext, await _params_checkpoint(view, params, inst.owner_id, inst.account_id, ext))
     old = {"strategy_id": inst.strategy_id, "strategy_version": inst.strategy_version,
            "params": _masked(registry.get_strategy(inst.strategy_id), json.loads(inst.params))}
+    # 名字是新建页自动生成的"旧策略名-xxxx"时一起改成新策略名，避免"定投加仓"实例实际跑着趋势回调
+    old_ext = registry.get_strategy(inst.strategy_id)
+    old_name = (old_ext.meta.get("name") if old_ext else None) or inst.strategy_id
+    m = re.fullmatch(re.escape(old_name) + r"-([0-9a-z]{4})", inst.name or "")
+    if m:
+        inst.name = f"{ext.meta.get('name') or ext.id}-{m.group(1)}"[:64]
     inst.strategy_id, inst.strategy_version = ext.id, ext.version
     inst.params = _store(ext, params)  # 旧参数全部丢弃
     inst.status, inst.last_error = "stopped", None
@@ -481,7 +562,7 @@ class CloseIn(BaseModel):
     amount: float | None = Field(None, gt=0)
 
 
-@router.post("/api/instances/{instance_id}/positions/{position_id}/close")
+@router.post("/api/instances/{instance_id}/positions/{position_id:path}/close")
 async def close_one(instance_id: int, position_id: str, body: CloseIn | None = None, ctx: Ctx = Depends(current)):
     inst = await own_instance(ctx.db, ctx.user, instance_id)
     if not await _cap(inst, "close_position"):
@@ -541,7 +622,23 @@ async def force_close(instance_id: int, body: ForceCloseIn | None = None, ctx: C
     if inst.status not in {"running", "paused", "stopped", "error"}:
         raise ApiError(40902)
     pid = body.position_id if body else None
-    return ok({"results": await engine.force_close(instance_id, actor=ctx.user, position_id=pid)})
+    results = await engine.force_close(instance_id, actor=ctx.user, position_id=pid)
+    return _close_outcome(results)
+
+
+FILLED = {"filled", "partial", "submitted"}
+
+
+def _close_outcome(results: list[dict[str, Any]]):
+    """平仓接口的结果以订单真实状态为准：全部被拒 → 业务错误；部分被拒 → code 0 但 message 写明。"""
+    if not results:
+        raise ApiError(42245, "没有可平的持仓")
+    bad = [r for r in results if (r.get("order") or {}).get("status") not in FILLED]
+    if len(bad) == len(results):
+        first = bad[0].get("order") or {}
+        raise ApiError(42246, f"平仓未成交：{first.get('reason') or first.get('status') or '未知原因'}", data={"results": results})
+    msg = "success" if not bad else f"{len(results) - len(bad)} 笔已平，{len(bad)} 笔未成交"
+    return ok({"results": results, "failed": len(bad)}, message=msg)
 
 
 @router.post("/api/instances/{instance_id}/orders/{order_id}/cancel")

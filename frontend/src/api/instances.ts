@@ -6,6 +6,7 @@ export interface InstanceInput {
   name: string
   strategy_id: string
   symbol: string
+  market_type?: 'spot' | 'futures'
   account_id: number | null
   paper: boolean
   paper_balance: number | null
@@ -23,6 +24,8 @@ export interface InstanceStatusInfo {
   positions: Position[]
   last_tick_at: string | null
   consecutive_errors: number
+  strategy_status: { summary: string; next_at?: number; at?: number } | null
+  last_log: { at: string; message: string } | null
 }
 
 export interface PaperAccount {
@@ -74,10 +77,12 @@ export const instancesApi = {
   remove: (id: Id) => http.delete<void>(P.instances.one(id), { silent: true }),
   resetPaper: (id: Id, body: { keep_orders: boolean; keep_snapshots: boolean }) => http.post<void>(P.instances.resetPaper(id), body),
   closePosition: (id: Id, pid: Id, amount?: number | null) =>
-    http.post<void>(P.instances.closePosition(id, pid), { amount: amount ?? null }, { silent: true }),
+    http.post<{ result?: unknown }>(P.instances.closePosition(id, pid), { amount: amount ?? null }, { silent: true }),
   closeBatch: (id: Id, position_ids: string[]) => http.post<void>(P.instances.closeBatch(id), { position_ids }, { silent: true }),
-  closeAll: (id: Id) => http.post<void>(P.instances.closeAll(id), undefined, { silent: true }),
-  forceClose: (id: Id, position_id: string) => http.post<void>(P.instances.forceClose(id), { position_id }, { silent: true }),
+  closeAll: (id: Id) => http.post<{ results?: unknown[] }>(P.instances.closeAll(id), undefined, { silent: true }),
+  // position_id 不传 = 平掉该实例全部持仓；返回 failed = 未成交笔数（全部未成交时接口直接报错）
+  forceClose: (id: Id, position_id?: string) =>
+    http.post<{ results: unknown[]; failed: number }>(P.instances.forceClose(id), position_id ? { position_id } : {}, { silent: true }),
   cancelOrder: (id: Id, oid: Id) => http.post<void>(P.instances.cancelOrder(id, oid), undefined, { silent: true }),
   cancelAll: (id: Id) => http.post<void>(P.instances.cancelAll(id), undefined, { silent: true }),
   paperAccount: (id: Id) => http.get<PaperAccount>(P.instances.paperAccount(id), undefined, { silent: true }),

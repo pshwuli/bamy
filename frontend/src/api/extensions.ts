@@ -43,6 +43,8 @@ export const bindingsApi = {
 export const adminExtApi = {
   reload: () => http.post<ReloadResult>(P.admin.pluginsReload),
   uninstall: (id: Id) => http.delete<void>(P.admin.plugin(id)),
+  // 撤销卸载：插件重新出现在市场，之前因卸载失效的绑定恢复为可用
+  reinstall: (id: Id) => http.post<unknown>(`${P.admin.plugin(id)}/install`),
   pluginHealth: (id: Id) => http.get<PluginHealth>(P.admin.pluginHealth(id)),
   networkHosts: () => http.get<{ items: { host: string; plugins: string[]; bindings: number }[] }>(P.admin.networkHosts),
   globalBindings: (q: Query) => http.get<Page<Binding>>(P.admin.globalBindings, q),

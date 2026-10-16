@@ -1,0 +1,64 @@
+kind: plugin
+
+id: drawdown_alert
+name: 回撤提醒
+version: 1.0.0
+author: bamy
+description: >-
+  实例权益从最高点回撤超过你设的比例时提醒你（站内通知，可选群机器人）。只提醒、不动仓位；
+  要自动停止请用风控规则里的"最大回撤"。每个实例每档只提醒一次，创出新高后重新计算。
+tags: [notify, risk]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [user, global]
+default_scope: user
+allow_multiple: false
+
+data_scope: own
+
+priority: 100
+
+network:
+  enabled: true
+  hosts:
+    - open.feishu.cn
+    - oapi.dingtalk.com
+    - qyapi.weixin.qq.com
+  timeout_ms: 5000
+
+hooks:
+  - event: system.heartbeat
+    handler: on_heartbeat
+  - event: risk.breached
+    handler: on_breached
+
+settings:
+  - key: levels
+    label: 提醒档位（%，逗号分隔）
+    type: string
+    default: "5,10,20"
+    max_length: 100
+    help: 例如 "5,10,20"：回撤到 5%、10%、20% 各提醒一次
+    group: 规则
+
+  - key: channel
+    label: 同时推送到
+    type: select
+    default: none
+    options:
+      - { value: none, label: 只发站内通知 }
+      - { value: feishu, label: 飞书群机器人 }
+      - { value: dingtalk, label: 钉钉群机器人 }
+      - { value: wecom, label: 企业微信群机器人 }
+    group: 渠道
+
+  - key: webhook_url
+    label: 机器人 Webhook 地址
+    type: secret
+    group: 渠道
+
+dependencies:
+  python: ">=3.11"
+  packages:
+    - httpx>=0.25.0

@@ -1,0 +1,81 @@
+kind: plugin
+
+id: daily_report
+name: 每日战报
+version: 1.0.0
+author: bamy
+description: >-
+  每天在你设定的时间推送一份战报：总权益、今日盈亏、各实例状态和今日成交笔数。
+  推送到站内通知中心；填了 Webhook 还会同时发到飞书 / 钉钉 / 企业微信 / Telegram 群机器人。
+tags: [notify, report]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [user, global]
+default_scope: user
+allow_multiple: false
+
+data_scope: own
+
+priority: 100
+
+network:
+  enabled: true
+  hosts:
+    - open.feishu.cn
+    - oapi.dingtalk.com
+    - qyapi.weixin.qq.com
+    - api.telegram.org
+  timeout_ms: 5000
+
+hooks:
+  - event: system.heartbeat
+    handler: on_heartbeat
+
+settings:
+  - key: hour
+    label: 推送时间（时）
+    type: int
+    default: 21
+    min: 0
+    max: 23
+    help: 按下方时区，每天这个钟点后的第一次心跳推送（心跳每 5 分钟一次）
+    group: 时间
+
+  - key: tz_offset
+    label: 时区（相对 UTC 的小时）
+    type: int
+    default: 8
+    min: -12
+    max: 14
+    help: 北京时间填 8
+    group: 时间
+
+  - key: channel
+    label: 推送渠道
+    type: select
+    default: none
+    options:
+      - { value: none, label: 只发站内通知 }
+      - { value: feishu, label: 飞书群机器人 }
+      - { value: dingtalk, label: 钉钉群机器人 }
+      - { value: wecom, label: 企业微信群机器人 }
+      - { value: telegram, label: Telegram }
+    group: 渠道
+
+  - key: webhook_url
+    label: 机器人 Webhook 地址
+    type: secret
+    help: 飞书 / 钉钉 / 企业微信群机器人的 Webhook 地址；Telegram 填 https://api.telegram.org/bot<token>/sendMessage
+    group: 渠道
+
+  - key: telegram_chat_id
+    label: Telegram 会话 ID
+    type: string
+    max_length: 64
+    group: 渠道
+
+dependencies:
+  python: ">=3.11"
+  packages:
+    - httpx>=0.25.0

@@ -24,8 +24,11 @@ os.environ.update({
 })
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
-PRICES = {"BTC/USDT": 50000.0, "ETH/USDT": 3000.0}
-MARKETS = {s: {"symbol": s, "spot": True, "active": True,
+PRICES = {"BTC/USDT": 50000.0, "ETH/USDT": 3000.0, "BTC/USDT:USDT": 50000.0, "ETH/USDT:USDT": 3000.0,
+          "PUMP/USDT": 1.0, "PUMP/USDT:USDT": 1.0}
+# 扫描测试用：近 4 小时涨幅、窗口最高/最低价、24h 成交额（测试里可直接改）
+WINDOW = {s: {"change_4h": 0.0, "high_4h": p, "quote_volume": 1e8} for s, p in PRICES.items()}
+MARKETS = {s: {"symbol": s, "spot": ":" not in s, "swap": ":" in s, "active": True,
                "precision": {"amount": 6, "price": 2}, "limits": {"amount": {"min": 0.0}, "cost": {"min": 0.0}}}
            for s in PRICES}
 
@@ -33,8 +36,10 @@ MARKETS = {s: {"symbol": s, "spot": True, "active": True,
 async def offline_source(symbol: str) -> dict:
     import time
 
+    w = WINDOW.get(symbol, {})
     return {"symbol": symbol, "price": PRICES[symbol], "bid": PRICES[symbol], "ask": PRICES[symbol],
-            "volume": 1.0, "ts": int(time.time() * 1000)}
+            "volume": 1.0, "ts": int(time.time() * 1000), **w,
+            "high": w.get("high_4h", PRICES[symbol]), "low": w.get("low_4h", PRICES[symbol])}
 
 
 @pytest.fixture(scope="session")

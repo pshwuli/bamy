@@ -31,7 +31,8 @@ class RestrictedHttp:
         if parts.username or parts.password or "@" in parts.netloc:
             raise PermissionError("URL 不得包含用户信息")
         host = (parts.hostname or "").lower().strip(".")
-        if not host or not any(host == h or host.endswith("." + h) for h in self._hosts):
+        # "*" = 任意公网主机（仍要过下面的解析检查：内网/本机/保留地址一律拒绝）
+        if not host or ("*" not in self._hosts and not any(host == h or host.endswith("." + h) for h in self._hosts)):
             raise PermissionError(f"主机 {host} 不在出网白名单内")
         return host
 
@@ -81,18 +82,20 @@ class PluginContext:
     state: StateStore
     http: RestrictedHttp | None
 
-    # 框架只注入两个窄能力（写日志、发通知），以闭包形式持有；插件拿不到引擎对象，也就拿不到任何下单接口
+    # 框架只注入三个窄能力（写日志、发通知、只读概览），以闭包形式持有；插件拿不到引擎对象，也就拿不到任何下单接口
     __slots__ = ("plugin_id", "binding_id", "scope", "scope_id", "settings", "data_scope", "state", "http",
-                 "_log_fn", "_notify_fn")
+                 "_log_fn", "_notify_fn", "_overview_fn")
 
     def __init__(self, *, log_fn: Callable[[str, str], None] | None = None,
-                 notify_fn: Callable[[str, str, str], Awaitable[None]] | None = None, **kw: Any) -> None:
+                 notify_fn: Callable[[str, str, str], Awaitable[None]] | None = None,
+                 overview_fn: Callable[[int | None], Awaitable[dict[str, Any]]] | None = None, **kw: Any) -> None:
         for name in ("plugin_id", "binding_id", "scope", "scope_id", "settings", "data_scope", "state", "http"):
             object.__setattr__(self, name, kw.get(name))
         if self.settings is None:
             object.__setattr__(self, "settings", {})
         object.__setattr__(self, "_log_fn", log_fn or (lambda level, msg: None))
         object.__setattr__(self, "_notify_fn", notify_fn)
+        object.__setattr__(self, "_overview_fn", overview_fn)
 
     def __getattribute__(self, name: str) -> Any:
         # 《插件规范》：访问私有成员（ctx._xxx）运行时拦截；框架自身经 object.__getattribute__ 读取
@@ -122,6 +125,14 @@ class PluginContext:
         fn = object.__getattribute__(self, "_notify_fn")
         if fn is not None:
             await fn(title, body, level)
+
+    async def overview(self, owner_id: int | None = None) -> dict[str, Any]:
+        """只读概览：本绑定可见用户的实例（状态、权益、初始资金、今日成交笔数）。
+
+        user/account 级绑定只看绑定对象自己的数据；global 级绑定需传 owner_id（通常取事件里的 owner_id）。
+        """
+        fn = object.__getattribute__(self, "_overview_fn")
+        return await fn(owner_id) if fn is not None else {"instances": []}
 
     def dump(self, value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)

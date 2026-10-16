@@ -258,10 +258,11 @@ async function revokeToken(tk: Row) {
 const disablePast = (d: Date) => d.getTime() < Date.now() - 86400_000
 
 // ---------------- 通知 ----------------
+// 与后端 engine/runtime.py NOTIFY_EVENTS 一致；后端会拒绝列表之外的事件
 const EVENT_TYPES = [
   'instance.error', 'instance.auto_stopped', 'order.filled', 'order.failed', 'order.rejected',
-  'guard.triggered', 'guard.missing', 'risk.breached', 'risk.circuit_break', 'account.invalid',
-  'reconcile.diff', 'system.alert',
+  'guard.triggered', 'guard.missing', 'risk.breached', 'risk.circuit_break', 'risk.circuit_recover',
+  'account.invalid', 'account.recovered', 'reconcile.diff', 'system.alert',
 ]
 const notifyForm = ref<FormInstance>()
 const notify = reactive<NotificationSettings>({ email_enabled: false, webhook_url: '', event_types: [] })
@@ -492,11 +493,11 @@ onMounted(() => {
         <el-tab-pane :label="t('settings.tabNotify')" name="notify">
           <ErrorState v-if="notifyError" :error="notifyError" @retry="loadNotify" />
           <el-form v-else ref="notifyForm" v-loading="notifyLoading" :model="notify" :rules="notifyRules" label-position="top" class="narrow" @submit.prevent="saveNotify">
-            <el-form-item :label="t('settings.emailEnabled')" prop="email_enabled">
-              <el-switch v-model="notify.email_enabled" :aria-label="t('settings.emailEnabled')" />
-            </el-form-item>
+            <!-- 事件邮件尚未实现（SMTP 只用于找回密码），不展示开关，避免"打开了却收不到" -->
+            <p class="muted small">{{ t('notifyx.how') }}</p>
             <el-form-item :label="t('settings.webhook')" prop="webhook_url">
               <el-input v-model="notify.webhook_url" placeholder="https://" type="url" clearable />
+              <div class="muted small">{{ t('notifyx.webhookHint') }}</div>
             </el-form-item>
             <el-form-item :label="t('settings.eventTypes')" prop="event_types">
               <el-checkbox-group v-model="notify.event_types" class="events">

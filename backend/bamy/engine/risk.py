@@ -26,10 +26,13 @@ RULE_TYPES = {
     "symbol_blacklist",
     "max_drawdown",          # {"value": 0.3}
     "max_daily_loss",        # {"value": 0.1}
-    "max_symbol_loss",       # {"value": 100}
     "symbol_cooldown",       # {"seconds": 300}
     "strategy_cooldown",
+    "max_leverage",          # 合约最大杠杆 {"value": 5}
 }
+
+DEFAULT_MAX_LEVERAGE = 5     # 没配规则时的合约杠杆上限
+HARD_MAX_LEVERAGE = 20       # 规则也不能超过的硬上限
 
 
 class RiskRejected(Exception):
@@ -72,10 +75,25 @@ class RiskEngine:
             out.append(r)
         return out
 
+    async def max_leverage(self, owner_id: int | None) -> int:
+        """合约杠杆上限：用户/全局 max_leverage 规则里最严的一条，默认 5，硬上限 20。"""
+        from bamy.db.session import session_scope
+
+        cap = DEFAULT_MAX_LEVERAGE
+        async with session_scope() as db:
+            vals = [int(float(json.loads(r.rule_value or "{}").get("value") or 0))
+                    for r in await self._rules(db, owner_id or 0, None) if r.rule_type == "max_leverage"]
+        vals = [v for v in vals if v > 0]
+        if vals:
+            cap = min(vals)
+        return max(1, min(cap, HARD_MAX_LEVERAGE))
+
     async def check_order(self, db: AsyncSession, *, instance, side: str, amount: float, price: float,
-                          reduce_only: bool) -> None:
-        """前置风控。reduce_only（平仓/卖出已持仓）在熔断期间仍允许。"""
+                          reduce_only: bool, symbol: str | None = None) -> None:
+        """前置风控。reduce_only（平仓/卖出已持仓）在熔断期间仍允许。symbol 为本单交易对（扫描实例每单不同）。"""
         owner_id, account_id = instance.owner_id, instance.account_id
+        symbol = symbol or instance.symbol
+        base_sym = symbol.split(":")[0]   # 黑白名单写 BTC/USDT 也能匹配合约 BTC/USDT:USDT
         breakers = await self.active_breakers(db, owner_id=owner_id, account_id=account_id)
         if breakers and not reduce_only:
             raise RiskRejected(40910, f"熔断中：{breakers[0].reason}", "circuit_breaker")
@@ -113,21 +131,23 @@ class RiskEngine:
                 raise RiskRejected(42248, "超出单日下单次数", t)
             if t == "max_orders_per_minute" and len(window) >= int(value.get("value", 0) or 0) > 0:
                 raise RiskRejected(42248, "超出每分钟下单次数", t)
-            if t == "symbol_whitelist" and instance.symbol not in set(value.get("symbols") or []):
-                raise RiskRejected(42249, "交易对不在白名单", t)
-            if t == "symbol_blacklist" and instance.symbol in set(value.get("symbols") or []):
-                raise RiskRejected(42249, "交易对在黑名单", t)
+            syms = set(value.get("symbols") or [])
+            if t == "symbol_whitelist" and not reduce_only and symbol not in syms and base_sym not in syms:
+                raise RiskRejected(42249, f"{symbol} 不在白名单", t)
+            if t == "symbol_blacklist" and not reduce_only and (symbol in syms or base_sym in syms):
+                raise RiskRejected(42249, f"{symbol} 在黑名单", t)
             if t in {"symbol_cooldown", "strategy_cooldown"} and not reduce_only:
-                key = f"{t}:{instance.symbol if t == 'symbol_cooldown' else instance.strategy_id}:{owner_id}"
+                key = f"{t}:{symbol if t == 'symbol_cooldown' else instance.strategy_id}:{owner_id}"
                 if self._cooldown_until.get(key, 0) > now:
                     raise RiskRejected(40911, "冷却中", t)
         window.append(now)
 
-    def after_fill(self, instance, rules: list[RiskRule]) -> None:
+    def after_fill(self, instance, rules: list[RiskRule], symbol: str | None = None) -> None:
+        symbol = symbol or instance.symbol
         for rule in rules:
             value = json.loads(rule.rule_value or "{}")
             if rule.rule_type == "symbol_cooldown":
-                self.set_cooldown(f"symbol_cooldown:{instance.symbol}:{instance.owner_id}", float(value.get("seconds", 0)))
+                self.set_cooldown(f"symbol_cooldown:{symbol}:{instance.owner_id}", float(value.get("seconds", 0)))
             if rule.rule_type == "strategy_cooldown":
                 self.set_cooldown(f"strategy_cooldown:{instance.strategy_id}:{instance.owner_id}", float(value.get("seconds", 0)))
 

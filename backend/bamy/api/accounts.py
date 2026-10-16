@@ -16,7 +16,7 @@ from bamy.core.crypto import decrypt, encrypt
 from bamy.core.errors import ApiError
 from bamy.core.response import ok, paginated
 from bamy.db.models import Account, AccountHealth, Instance, Order
-from bamy.engine.adapters import BinanceSpotAdapter, ExchangeError
+from bamy.engine.adapters import ExchangeError, make_adapter
 from bamy.engine.client_pool import pool
 from bamy.engine.pluginhub import plugin_hub
 from bamy.engine.runtime import engine
@@ -41,11 +41,11 @@ class AccountIn(BaseModel):
     ip_whitelist: list[str] | None = None
 
 
-async def _verify(api_key: str, api_secret: str, env: str, readonly: bool) -> dict[str, Any]:
+async def _verify(api_key: str, api_secret: str, env: str, readonly: bool, market_type: str = "spot") -> dict[str, Any]:
     """1 格式 → 2 连通 → 3 凭证 → 4 权限 → 5 环境 → 6 交易类型（《账号模块设计》4.2）。"""
     if not KEY_RE.match(api_key) or not KEY_RE.match(api_secret):
         raise ApiError(42210, "API Key/Secret 格式不符合币安格式")
-    client = BinanceSpotAdapter(api_key, api_secret, env=env, readonly=readonly)
+    client = make_adapter(api_key, api_secret, env=env, readonly=readonly, market_type=market_type)
     try:
         return await client.verify()
     except ExchangeError as exc:
@@ -57,8 +57,8 @@ async def _verify(api_key: str, api_secret: str, env: str, readonly: bool) -> di
 async def _check_new(ctx: Ctx, body: AccountIn, *, verify: bool = True) -> dict[str, Any]:
     if body.env not in {"mainnet", "testnet"}:
         raise ApiError(40003, "env 必须是 mainnet 或 testnet")
-    if body.market_type != "spot":
-        raise ApiError(42224, "只支持现货（market_type=spot）")
+    if body.market_type not in {"spot", "futures"}:
+        raise ApiError(42224, "market_type 只能是 spot（现货）或 futures（U 本位合约）")
     limit = int(system_config.get("account.max_per_user", 20))
     count = await ctx.db.scalar(select(func.count(Account.id)).where(Account.owner_id == ctx.user.id,
                                                                      Account.deleted_at.is_(None))) or 0
@@ -74,7 +74,7 @@ async def _check_new(ctx: Ctx, body: AccountIn, *, verify: bool = True) -> dict[
                                                            Account.deleted_at.is_(None)))).scalars():
         if decrypt(row.api_key_enc) == body.api_key:
             raise ApiError(42214)
-    return await _verify(body.api_key, body.api_secret, body.env, body.readonly) if verify else {}
+    return await _verify(body.api_key, body.api_secret, body.env, body.readonly, body.market_type) if verify else {}
 
 
 async def _count_instances(ctx: Ctx, ids: list[int]) -> dict[int, int]:
@@ -115,7 +115,7 @@ async def get_account(account_id: int, ctx: Ctx = Depends(current)):
 async def create_account(body: AccountIn, ctx: Ctx = Depends(current)):
     info = await _check_new(ctx, body)
     acc = Account(owner_id=ctx.user.id, name=body.name, api_key_enc=encrypt(body.api_key),
-                  api_secret_enc=encrypt(body.api_secret), env=body.env, market_type="spot",
+                  api_secret_enc=encrypt(body.api_secret), env=body.env, market_type=body.market_type,
                   readonly=body.readonly or not info.get("can_trade", True), status="online", remark=body.remark,
                   ip_whitelist=json.dumps(body.ip_whitelist) if body.ip_whitelist else None,
                   last_verified_at=datetime.utcnow(), last_active_at=datetime.utcnow())
@@ -144,7 +144,7 @@ async def batch_import(body: BatchIn, ctx: Ctx = Depends(current)):
             errors.append({"index": idx, "name": item.name, "code": exc.code, "reason": exc.message})
             continue
         acc = Account(owner_id=ctx.user.id, name=item.name, api_key_enc=encrypt(item.api_key),
-                      api_secret_enc=encrypt(item.api_secret), env=item.env, market_type="spot",
+                      api_secret_enc=encrypt(item.api_secret), env=item.env, market_type=item.market_type,
                       readonly=item.readonly or not info.get("can_trade", True), status="online", remark=item.remark,
                       last_verified_at=datetime.utcnow())
         ctx.db.add(acc)
@@ -201,7 +201,7 @@ class CredIn(BaseModel):
 @router.post("/{account_id}/credentials")
 async def update_credentials(account_id: int, body: CredIn, ctx: Ctx = Depends(current)):
     acc = await own_account(ctx.db, ctx.user, account_id)
-    info = await _verify(body.api_key, body.api_secret, acc.env, acc.readonly)
+    info = await _verify(body.api_key, body.api_secret, acc.env, acc.readonly, acc.market_type)
     acc.api_key_enc, acc.api_secret_enc = encrypt(body.api_key), encrypt(body.api_secret)
     acc.status, acc.last_verified_at = "online", datetime.utcnow()
     if not info.get("can_trade", True):
@@ -219,7 +219,7 @@ async def verify_account(account_id: int, ctx: Ctx = Depends(current)):
     acc = await own_account(ctx.db, ctx.user, account_id)
     started = datetime.utcnow()
     try:
-        info = await _verify(decrypt(acc.api_key_enc), decrypt(acc.api_secret_enc), acc.env, acc.readonly)
+        info = await _verify(decrypt(acc.api_key_enc), decrypt(acc.api_secret_enc), acc.env, acc.readonly, acc.market_type)
     except ApiError as exc:
         ctx.db.add(AccountHealth(account_id=acc.id, success=False, error_code=str(exc.code), error_message=exc.message))
         if exc.code in {42210, 42211}:
