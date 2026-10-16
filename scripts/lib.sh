@@ -17,10 +17,22 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%F %T')" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
 detect_mode() {
+  # 1) 显式指定优先
   if [[ -n "${BAMY_MODE:-}" ]]; then
     [[ "${BAMY_MODE}" == docker || "${BAMY_MODE}" == native ]] || die "BAMY_MODE 只能是 docker 或 native"
-    echo "${BAMY_MODE}"
-  elif [[ -f "${DOCKER_DIR}/.env" ]] && command -v docker >/dev/null 2>&1; then
+    echo "${BAMY_MODE}"; return
+  fi
+  # 2) 看实际在跑的是哪种：native 有 PID 文件且进程活着；docker 有 bamy 的 app 容器在跑。
+  #    只看 docker/.env 在不在会误判——native 部署常常也留着 docker/.env。
+  if [[ -f "${PID_FILE}" ]] && kill -0 "$(cat "${PID_FILE}" 2>/dev/null)" 2>/dev/null; then
+    echo native; return
+  fi
+  if command -v docker >/dev/null 2>&1 && [[ -n "$(docker ps -q --filter label=com.docker.compose.project=bamy \
+       --filter label=com.docker.compose.service=app 2>/dev/null)" ]]; then
+    echo docker; return
+  fi
+  # 3) 都没在跑（首次启动或已停止）：有 docker/.env 且装了 docker 才走 docker
+  if [[ -f "${DOCKER_DIR}/.env" ]] && command -v docker >/dev/null 2>&1; then
     echo docker
   else
     echo native

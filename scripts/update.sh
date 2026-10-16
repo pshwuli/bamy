@@ -8,6 +8,9 @@
 set -uo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
+# 当前部署模式（lib.sh 按实际在跑的服务判断）固定下来，子脚本 backup.sh / start.sh 都继承同一个，不各自再猜
+export BAMY_MODE="${MODE}"
+
 DIR="${UPDATE_DIR:-${ROOT_DIR}/data/update}"
 mkdir -p "${DIR}"
 LOG="${DIR}/update.log"
@@ -62,7 +65,7 @@ fail() {
 }
 
 if [[ "${ACTION}" == apply ]]; then : > "${LOG}"; fi
-log "检查更新（分支 ${BRANCH}）" | tee -a "${LOG}"
+log "检查更新（分支 ${BRANCH}，部署模式 ${MODE}）" | tee -a "${LOG}"
 status checking "正在检查更新"
 if ! git fetch --quiet origin "${BRANCH}" >>"${LOG}" 2>&1; then
   if git ls-remote --exit-code origin >/dev/null 2>&1; then
@@ -93,7 +96,7 @@ rollback() {
   log "回滚到更新前的版本 ${OLD:0:7}" | tee -a "${LOG}"
   git reset --quiet --hard "${OLD}" >>"${LOG}" 2>&1
   (cd frontend && npm run build >>"${LOG}" 2>&1)
-  BAMY_MODE="${MODE}" "${SCRIPT_DIR}/start.sh" >>"${LOG}" 2>&1
+  "${SCRIPT_DIR}/start.sh" >>"${LOG}" 2>&1
 }
 
 if [[ "$(git rev-parse HEAD:frontend/package-lock.json 2>/dev/null)" != "${LOCK_BEFORE}" ]]; then
@@ -105,7 +108,7 @@ step "构建前端（几分钟）"
 (cd frontend && npm run build >>"${LOG}" 2>&1) || { rollback; fail "前端构建失败，已回滚到 ${OLD:0:7}"; }
 
 step "重启服务（期间页面会短暂断开）"
-BAMY_MODE="${MODE}" "${SCRIPT_DIR}/start.sh" >>"${LOG}" 2>&1 || { rollback; fail "新版本启动失败，已回滚到 ${OLD:0:7}"; }
+"${SCRIPT_DIR}/start.sh" >>"${LOG}" 2>&1 || { rollback; fail "新版本启动失败，已回滚到 ${OLD:0:7}"; }
 
 NEW="$(git rev-parse --short HEAD)"
 log "更新完成：${OLD:0:7} → ${NEW}" | tee -a "${LOG}"
