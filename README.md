@@ -131,15 +131,23 @@ bamy/
 
 ## 快速开始
 
-最短路径：
+在一台装好 Docker、Node 18+、git 的 Linux 服务器上：
 
 ```
+git clone https://github.com/pshwuli/bamy.git && cd bamy
 cp docker/.env.docker.example docker/.env   # 填 SECRET_KEY、ENCRYPT_KEY、POSTGRES_PASSWORD、BAMY_DB_PASSWORD
 (cd frontend && npm ci && npm run build)
-scripts/start.sh
+BAMY_MODE=docker scripts/start.sh            # 默认端口见 docker/.env 的 HTTP_PORT
+sudo bash scripts/install-updater.sh         # 可选：装上后台"系统更新"按钮
 ```
 
-然后访问 `http://localhost/setup` 创建第一个管理员。不用 Docker 时见快速开始 3.2（`BAMY_MODE=native scripts/start.sh`，端口 8000）。
+然后访问 `http://服务器地址/setup` 创建第一个管理员。不用 Docker 时见快速开始 3.2（`BAMY_MODE=native scripts/start.sh`，端口 8000）。
+
+默认只能建模拟盘。要跑实盘，把 `docker/.env` 里的 `ENABLE_LIVE_TRADING` 改成 `true` 再重启。
+
+### 更新
+
+装了更新服务后，用超级管理员登录后台 → 超级管理 → 系统更新 → 立即更新。它会先备份数据库，再拉取本仓库 main 分支的新代码、构建、重启；任何一步失败都会自动回滚。没装的话在服务器上执行 `scripts/update.sh apply`，效果一样。
 
 开发与测试：
 
@@ -158,7 +166,7 @@ cd frontend && npm run typecheck        # 前端类型检查
 
 ## 当前状态
 
-设计阶段。十三份设计文档已完成，五份指南与四份参考手册已完成。下一步是按文档实现代码。
+1.0 可用：现货与 U 本位合约模拟盘、币安现货实盘、全市场扫描策略、插件、后台一键更新。合约实盘适配器已写好但只做过离线验证。
 
 ## 许可
 
