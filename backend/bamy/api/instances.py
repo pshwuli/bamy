@@ -29,6 +29,7 @@ from bamy.extensions.registry import registry
 from bamy.extensions.schema import (SchemaError, encrypt_secrets, mask_secrets, merge_secrets, secret_keys,
                                     validate)
 from bamy.services import system_config
+from bamy.services.live_equity import live_pnl
 from bamy.services.audit import audit_dict, int_filter, query_audit, system_log_dict, write_audit
 
 router = APIRouter()
@@ -95,6 +96,10 @@ async def _out(ctx: Ctx, rows: list[Instance]) -> list[dict[str, Any]]:
         ext = registry.get_strategy(i.strategy_id)
         equity = None
         initial = None
+        pnl = None
+        if not i.paper:
+            lp = await live_pnl(ctx.db, i)
+            equity, initial, pnl = lp["equity"], lp["initial"], lp["pnl"]
         if i.paper:
             acct = (await ctx.db.execute(select(PaperAccount).where(PaperAccount.instance_id == i.id))).scalar_one_or_none()
             run = engine.running.get(i.id)
@@ -108,7 +113,8 @@ async def _out(ctx: Ctx, rows: list[Instance]) -> list[dict[str, Any]]:
         running_secs = int((datetime.utcnow() - i.last_started_at).total_seconds()) if i.status in {"running", "paused"} and i.last_started_at else None
         out.append(instance_out(i, strategy_name=ext.meta.get("name") if ext else None,
                                 account_name=names.get(i.account_id), equity=equity,
-                                extra={"initial_equity": initial,
+                                extra={"initial_equity": initial, "pnl": pnl if pnl is not None else (
+                                           equity - initial if equity is not None and initial else None),
                                        "return_pct": round((equity - initial) / initial * 100, 4) if equity is not None and initial else None,
                                        "running_seconds": running_secs,
                                        "capabilities": ext.capabilities if ext else {}}))
@@ -152,6 +158,7 @@ class PaperConfigIn(BaseModel):
     limit_mode: str | None = Field(None, pattern="^(book|immediate)$")
     quote_asset: str | None = Field(None, pattern="^USDT$")
     leverage: int | None = Field(None, ge=1, le=20)     # 仅 U 本位合约
+    live_capital: float | None = Field(None, gt=0, le=PAPER_BALANCE_MAX)   # 仅实盘：本实例本金（算收益率、回撤用）
 
 
 def _normalize_symbol(raw: str, market_type: str, *, scan: bool) -> str:
@@ -219,6 +226,8 @@ async def create_instance(body: InstanceIn, ctx: Ctx = Depends(current)):
         raise ApiError(42231, f"交易对 {symbol} 不存在或已下架")
     if body.paper_config and body.paper_config.leverage and body.market_type != "futures":
         raise ApiError(40003, "现货不能设杠杆")
+    if body.paper_config and body.paper_config.live_capital and body.paper:
+        raise ApiError(40003, "模拟盘的本金就是初始资金，不用另设 live_capital")
     if body.market_type == "futures":
         cap = await risk_engine.max_leverage(ctx.user.id)
         lev = (body.paper_config.leverage if body.paper_config else None) or 1
@@ -288,11 +297,22 @@ async def update_instance(instance_id: int, body: InstancePatch, ctx: Ctx = Depe
         if body.stop_action not in {"keep", "close"}:
             raise ApiError(40003, "stop_action 必须是 keep 或 close")
         inst.stop_action = body.stop_action
-    if body.params is not None or body.paper_config is not None:
+    new_cfg = body.paper_config.model_dump(exclude_none=True) if body.paper_config is not None else {}
+    only_capital = bool(new_cfg) and set(new_cfg) == {"live_capital"}
+    if body.params is not None or (new_cfg and not only_capital):
         if inst.status not in {"created", "stopped", "error"}:
             raise ApiError(40903, "运行中的实例不能改参数，请先停止")
-    if body.paper_config is not None and inst.paper:
-        new_cfg = body.paper_config.model_dump(exclude_none=True)
+    if new_cfg.get("live_capital") is not None and inst.paper:
+        raise ApiError(40003, "模拟盘的本金就是初始资金，不用另设")
+    if new_cfg and not inst.paper:
+        # 实盘只允许改本金（只影响收益率/回撤的计算口径，不影响下单，运行中也能改）
+        extra = set(new_cfg) - {"live_capital", "leverage"}
+        if extra:
+            raise ApiError(40003, f"实盘实例不能设置 {', '.join(sorted(extra))}")
+        if new_cfg.get("leverage") and inst.market_type != "futures":
+            raise ApiError(40003, "现货不能设杠杆")
+        inst.paper_config = json.dumps(json.loads(inst.paper_config or "{}") | new_cfg)
+    if new_cfg and inst.paper:
         if new_cfg.get("leverage"):
             if inst.market_type != "futures":
                 raise ApiError(40003, "现货不能设杠杆")
@@ -380,10 +400,15 @@ async def instance_status(instance_id: int, ctx: Ctx = Depends(current)):
         positions = await engine.list_positions(await engine.ctx_for(instance_id))
     except Exception:  # noqa: BLE001
         positions = []
+    live = None
     if inst.paper:
         book = run.book if run and run.book else await engine._get_book(instance_id)
         equity = float(book.equity(await engine._prices(book)))
         balance = float(book.balance)
+    else:
+        live = await live_pnl(ctx.db, inst)
+        equity = live["equity"]
+        balance = live["initial"] + live["realized"] if live["initial"] else None
     tick = market.cached(inst.symbol)
     strategy_status = None
     raw = await engine.state_get(inst.id, "ui.status")
@@ -400,7 +425,7 @@ async def instance_status(instance_id: int, ctx: Ctx = Depends(current)):
                "running_since": iso(inst.last_started_at) if inst.status in {"running", "paused"} else None,
                "equity": equity, "balance": balance, "positions": positions,
                "last_tick_at": datetime.utcfromtimestamp(tick["received_at"]).isoformat() + "Z" if tick else None,
-               "consecutive_errors": inst.consecutive_errors, "last_error": inst.last_error,
+               "consecutive_errors": inst.consecutive_errors, "last_error": inst.last_error, "live": live,
                "in_memory": run is not None})
 
 

@@ -41,6 +41,7 @@ class ExchangeOrder:
     fee: float = 0.0
     raw: dict[str, Any] | None = None
     client_order_id: str | None = None
+    fee_currency: str | None = None
 
 
 class BinanceSpotAdapter:
@@ -324,7 +325,16 @@ def _parse_order(raw: dict[str, Any], client_order_id: str | None) -> ExchangeOr
         fee=_sum_fee(raw),
         raw=raw,
         client_order_id=client_order_id,
+        fee_currency=_fee_currency(raw),
     )
+
+
+def _fee_currency(raw: dict[str, Any]) -> str | None:
+    fee = raw.get("fee") or {}
+    if fee.get("currency"):
+        return str(fee["currency"])
+    curs = {str(f.get("currency")) for f in raw.get("fees") or [] if f.get("currency")}
+    return curs.pop() if len(curs) == 1 else ("MIXED" if curs else None)
 
 
 def _sum_fee(raw: dict[str, Any]) -> float:

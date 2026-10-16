@@ -105,10 +105,43 @@ const pnlRate = (p: Row): number | null =>
   p.pnl_rate != null ? Number(p.pnl_rate) : p.unrealized_pnl_pct != null ? Number(p.unrealized_pnl_pct) / 100 : null
 
 async function loadPaper() {
-  if (!inst.value?.paper) return
-  const [a, s] = await Promise.allSettled([instancesApi.paperAccount(id.value), instancesApi.paperSnapshots(id.value, {})])
+  if (!inst.value) return
+  // 权益快照：模拟盘和实盘都有（实盘要设了本金才写）
+  const [a, s] = await Promise.allSettled([
+    inst.value.paper ? instancesApi.paperAccount(id.value) : Promise.reject(new Error('live')),
+    instancesApi.paperSnapshots(id.value, {}),
+  ])
   if (a.status === 'fulfilled') paper.value = a.value
   if (s.status === 'fulfilled') snapshots.value = itemsOf(s.value as never)
+}
+
+// 实盘本金：用来算收益率和回撤（不影响下单）；运行中也能改
+const liveCapital = computed<number | null>(() => {
+  const v = Number((inst.value?.paper_config as Row | null)?.live_capital)
+  return Number.isFinite(v) && v > 0 ? v : null
+})
+const livePnl = computed<number | null>(() => (inst.value && !inst.value.paper && inst.value.pnl != null ? Number(inst.value.pnl) : null))
+const capOpen = ref(false)
+const capValue = ref<number | null>(null)
+const capSaving = ref(false)
+function openCapital() {
+  capValue.value = liveCapital.value
+  capOpen.value = true
+}
+async function saveCapital() {
+  if (!capValue.value || capValue.value <= 0) return
+  capSaving.value = true
+  try {
+    await instancesApi.update(id.value, { paper_config: { live_capital: capValue.value } })
+    capOpen.value = false
+    ElMessage.success(t('common.saved'))
+    await loadInstance()
+    await loadPaper()
+  } catch (e) {
+    handleError(e)
+  } finally {
+    capSaving.value = false
+  }
 }
 
 async function loadPositions() {
@@ -624,8 +657,15 @@ function onMore(cmd: string) {
         <el-tabs v-model="tab">
           <!-- 概览 -->
           <el-tab-pane :label="t('instance.tabOverview')" name="overview">
+            <el-alert v-if="!inst.paper && !liveCapital" type="info" :closable="false" show-icon class="mb" :title="t('livex.noCapital')">
+              <el-button v-if="isOwner" size="small" type="primary" @click="openCapital">{{ t('livex.setCapital') }}</el-button>
+            </el-alert>
             <div v-if="isMobile" class="m-figs">
-              <div class="m-eq"><span>{{ t('instance.equity') }}</span><b class="num">{{ fmtMoney(equity) }}</b></div>
+              <div class="m-eq">
+                <span>{{ !inst.paper && !liveCapital ? t('livex.pnl') : t('instance.equity') }}</span>
+                <b class="num" :class="!inst.paper && !liveCapital ? pnlClass(livePnl) : ''">{{ !inst.paper && !liveCapital ? fmtMoney(livePnl) : fmtMoney(equity) }}</b>
+                <button v-if="!inst.paper && liveCapital && isOwner" type="button" class="cap-link" @click="openCapital">{{ t('livex.capital') }} {{ fmtMoney(liveCapital) }} · {{ t('common.edit') }}</button>
+              </div>
               <dl>
                 <div><dt>{{ t('instance.returnRate') }}</dt><dd class="num" :class="pnlClass(returnRate)">{{ fmtPct(returnRate) }}</dd></div>
                 <div><dt>{{ t('instance.maxDrawdown') }}</dt><dd class="num">{{ maxDrawdown == null ? '—' : fmtPct(maxDrawdown, 2, false) }}</dd></div>
@@ -633,11 +673,24 @@ function onMore(cmd: string) {
               </dl>
             </div>
             <div v-else class="grid-cards">
-              <StatCard :label="t('instance.equity')" :value="fmtMoney(equity)" class="big" />
+              <StatCard v-if="!inst.paper && !liveCapital" :label="t('livex.pnl')" :value="fmtMoney(livePnl)" :tone="livePnl == null ? '' : livePnl >= 0 ? 'up' : 'down'" class="big" />
+              <StatCard v-else :label="t('instance.equity')" :value="fmtMoney(equity)" class="big" />
               <StatCard :label="t('instance.returnRate')" :value="fmtPct(returnRate)" :tone="returnRate == null ? '' : returnRate >= 0 ? 'up' : 'down'" />
               <StatCard :label="t('instance.maxDrawdown')" :value="maxDrawdown == null ? '-' : fmtPct(maxDrawdown, 2, false)" />
               <StatCard :label="t('instance.runtime')" :value="fmtDuration(runSecs)" />
             </div>
+            <p v-if="!inst.paper && liveCapital && !isMobile" class="note">
+              {{ t('livex.capital') }} {{ fmtMoney(liveCapital) }} USDT · {{ t('livex.basis') }}
+              <el-button v-if="isOwner" link type="primary" @click="openCapital">{{ t('common.edit') }}</el-button>
+            </p>
+            <el-dialog v-model="capOpen" :title="t('livex.setCapital')" width="min(420px, 92vw)" append-to-body>
+              <p class="note">{{ t('livex.capitalHelp') }}</p>
+              <el-input-number v-model="capValue" :min="1" :step="100" controls-position="right" style="width: 100%" />
+              <template #footer>
+                <el-button @click="capOpen = false">{{ t('common.cancel') }}</el-button>
+                <el-button type="primary" :loading="capSaving" :disabled="!capValue" @click="saveCapital">{{ t('common.save') }}</el-button>
+              </template>
+            </el-dialog>
 
             <div v-if="runInfo && (runInfo.strategy_status || runInfo.last_log)" class="run-info mb">
               <div class="ri-head">{{ t('instx.runInfo') }}</div>
@@ -942,4 +995,5 @@ function onMore(cmd: string) {
 .run-info .ri-head { font-size: 12px; opacity: .7; margin-bottom: 4px; }
 .run-info .ri-sum { margin: 0 0 4px; font-size: 14px; line-height: 1.5; word-break: break-all; }
 .run-info .ri-meta { margin: 2px 0 0; font-size: 12px; opacity: .75; word-break: break-all; }
+.cap-link { align-self: flex-start; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 12px; cursor: pointer; }
 </style>

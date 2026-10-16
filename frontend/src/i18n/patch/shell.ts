@@ -15,6 +15,11 @@ export default {
       t_max_orders_per_minute: '每分钟下单次数上限', t_symbol_whitelist: '交易对白名单', t_symbol_blacklist: '交易对黑名单',
       t_max_drawdown: '最大回撤（触发即停）', t_max_daily_loss: '单日最大亏损（触发即停）', t_symbol_cooldown: '同币成交后冷却', t_strategy_cooldown: '同策略成交后冷却', t_max_leverage: '合约最大杠杆（倍）',
     },
+    livex: {
+      pnl: '本实例盈亏', capital: '本金', optional: '选填', setCapital: '设置本金', basis: '收益率和回撤按本实例自己的成交计算，不含账号里其他实例和手动交易',
+      noCapital: '实盘实例还没设置本金：先显示按本实例成交算出的盈亏金额；设了本金才能看收益率和最大回撤。',
+      capitalHelp: '这个实例打算用多少 USDT 跑（只用来算收益率和回撤，不会限制下单）。一个账号跑多个实例时，填各自分到的那份。运行中也可以改。',
+    },
     upd: {
       title: '系统更新', check: '检查更新', apply: '立即更新', running: '更新中…', state: '状态', current: '当前版本', branch: '分支',
       checkedAt: '上次检查', pending: '有 {n} 个新提交：', log: '更新日志', started: '已开始更新，页面会短暂断开，完成后自动刷新状态',
@@ -85,6 +90,11 @@ export default {
       t_max_order_value: 'Max order value', t_max_daily_value: 'Max daily order value', t_max_daily_orders: 'Max orders per day',
       t_max_orders_per_minute: 'Max orders per minute', t_symbol_whitelist: 'Symbol allowlist', t_symbol_blacklist: 'Symbol blocklist',
       t_max_drawdown: 'Max drawdown (stops)', t_max_daily_loss: 'Max daily loss (stops)', t_symbol_cooldown: 'Cooldown after a fill (symbol)', t_strategy_cooldown: 'Cooldown after a fill (strategy)', t_max_leverage: 'Max futures leverage (x)',
+    },
+    livex: {
+      pnl: 'Instance P&L', capital: 'Capital', optional: 'Optional', setCapital: 'Set capital', basis: 'Return and drawdown use this instance’s own fills only, not other instances or manual trades on the account',
+      noCapital: 'No capital set for this live instance: showing P&L from its own fills. Set capital to see return and max drawdown.',
+      capitalHelp: 'How many USDT this instance runs with (used only for return/drawdown, never limits orders). If several instances share an account, enter each one’s share. Can be changed while running.',
     },
     upd: {
       title: 'System update', check: 'Check for updates', apply: 'Update now', running: 'Updating…', state: 'Status', current: 'Current', branch: 'Branch',

@@ -313,3 +313,73 @@ async def test_reconcile_open_orders_always_with_symbol(client, user_h, monkeypa
         await db.commit()
     await R.engine.reconcile_account(aid)
     assert calls == ["BTC/USDT", "ETH/USDT"] and None not in calls
+
+
+# 实盘资金口径：按本实例成交算盈亏；设了本金才有权益、收益率与快照（不用账号总余额）
+async def test_live_instance_equity(client, user_h, monkeypatch):
+    from decimal import Decimal
+
+    from bamy.db.models import Account, Instance, Order
+    from bamy.db.session import session_scope
+    from bamy.services.live_equity import live_pnl
+
+    me = body(await client.get("/api/auth/me", headers=user_h))["data"]
+    async with session_scope() as db:
+        acc = Account(owner_id=me["id"], name="live-eq-acc", api_key_enc="x", api_secret_enc="y", status="online")
+        db.add(acc)
+        await db.commit()
+        inst = Instance(owner_id=me["id"], name="live-eq", account_id=acc.id, strategy_id="dca_strategy",
+                        strategy_version="1", symbol="BTC/USDT", paper=False, params="{}", status="stopped")
+        db.add(inst)
+        await db.commit()
+        iid = inst.id
+        # 买 0.02 @ 40000，卖 0.01 @ 45000（已实现 +50），手续费 1 USDT；剩 0.01，现价 50000（未实现 +100）
+        for k, (side, qty, px, fee) in enumerate((("buy", "0.02", "40000", "0.6"), ("sell", "0.01", "45000", "0.4"))):
+            db.add(Order(client_order_id=f"leq-{iid}-{k}", instance_id=iid, owner_id=me["id"], account_id=acc.id,
+                         symbol="BTC/USDT", side=side, type="market", amount=Decimal(qty), filled_amount=Decimal(qty),
+                         filled_price=Decimal(px), fee=Decimal(fee), fee_currency="USDT", status="filled"))
+        await db.commit()
+    d = body(await client.get(f"/api/instances/{iid}", headers=user_h))["data"]
+    assert abs(d["pnl"] - (50 + 100 - 1)) < 1e-6 and d["equity"] is None and d["return_pct"] is None
+    # 运行中也能改本金；只允许改本金/杠杆
+    r = await client.patch(f"/api/instances/{iid}", headers=user_h, json={"paper_config": {"live_capital": 1000}})
+    assert body(r)["code"] == 0, r.text
+    r = await client.patch(f"/api/instances/{iid}", headers=user_h, json={"paper_config": {"fee_rate": 0.01}})
+    assert body(r)["code"] == 40003
+    d = body(await client.get(f"/api/instances/{iid}", headers=user_h))["data"]
+    assert abs(d["equity"] - 1149) < 1e-6 and abs(d["return_pct"] - 14.9) < 1e-6
+    st = body(await client.get(f"/api/instances/{iid}/status", headers=user_h))["data"]
+    assert abs(st["equity"] - 1149) < 1e-6 and st["live"]["initial"] == 1000
+    # 模拟盘不接受 live_capital
+    r = await _instance(client, user_h, name="paper-cap", paper_config={"live_capital": 500})
+    assert body(r)["code"] == 40003
+    # 非 USDT 手续费（BNB 抵扣）不计入并标注
+    async with session_scope() as db:
+        o = (await db.execute(__import__("sqlalchemy").select(Order).where(Order.instance_id == iid))).scalars().first()
+        o.fee_currency = "BNB"
+        await db.commit()
+        lp = await live_pnl(db, await db.get(Instance, iid))
+    assert lp["fee_other"] is True and abs(lp["fees"] - 0.4) < 1e-9
+
+
+# 实盘也写权益快照（有本金时），最大回撤由快照算出
+async def test_live_snapshot_written(client, user_h):
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from bamy.db.models import Instance, PaperSnapshot
+    from bamy.db.session import session_scope
+    from bamy.engine.runtime import engine
+
+    async with session_scope() as db:
+        inst = (await db.execute(select(Instance).where(Instance.name == "live-eq"))).scalar_one()
+    run = SimpleNamespace(instance_id=inst.id, owner_id=inst.owner_id, book=None, day_key="", day_start_equity=None,
+                          ctx=await engine.ctx_for(inst.id), strategy=None)
+    await engine._snapshot_one(run)
+    async with session_scope() as db:
+        snap = (await db.execute(select(PaperSnapshot).where(PaperSnapshot.instance_id == inst.id))).scalars().all()
+    # 上一个用例把 0.6 的手续费改成了 BNB（不计入），所以是 1149.6
+    assert snap and abs(float(snap[-1].equity) - 1149.6) < 1e-6 and float(snap[-1].peak_equity) >= 1149.6
+    items = body(await client.get(f"/api/instances/{inst.id}/paper-snapshots", headers=user_h))["data"]["items"]
+    assert items and abs(items[-1]["equity"] - 1149.6) < 1e-6

@@ -60,9 +60,8 @@ def _aggregate(rows: list[PaperSnapshot], granularity: str | None) -> list[Paper
 @router.get("/api/instances/{instance_id}/paper-snapshots")
 async def paper_snapshots(instance_id: int, ctx: Ctx = Depends(current), start_time: str | None = None,
                           end_time: str | None = None, granularity: str | None = None):
-    inst = await own_instance(ctx.db, ctx.user, instance_id, admin_ok=ctx.is_admin)
-    if not inst.paper:
-        raise ApiError(42260, "不是模拟盘实例")
+    await own_instance(ctx.db, ctx.user, instance_id, admin_ok=ctx.is_admin)
+    # 模拟盘和实盘都写权益快照（实盘需设置本金才有，见 services/live_equity.py）
     rows = await _snapshots(ctx, [instance_id], _dt(start_time), _dt(end_time))
     items = _aggregate(rows.get(instance_id, []), granularity)
     return ok({"instance_id": instance_id, "granularity": granularity or "raw",

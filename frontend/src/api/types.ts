@@ -88,6 +88,10 @@ export interface Instance {
   equity?: number | null
   initial_balance?: number | null
   return_rate?: number | null
+  return_pct?: number | null
+  initial_equity?: number | null
+  pnl?: number | null
+  paper_config?: Record<string, unknown> | null
   running_since?: string | null
   last_active_at?: string | null
   params?: Record<string, unknown>

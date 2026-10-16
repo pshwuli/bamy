@@ -43,6 +43,7 @@ const form = reactive({
   stop_action: 'keep',
   market_type: 'spot' as 'spot' | 'futures',
   leverage: 1,
+  live_capital: null as number | null,
 })
 const params = ref<Record<string, unknown>>({})
 const errs = ref<Record<string, string>>({})
@@ -143,7 +144,10 @@ async function submit() {
     paper_balance: form.paper ? form.paper_balance : null,
     paper_config: form.paper
       ? { fee_rate: form.fee_rate, slippage: form.slippage, ...(form.market_type === 'futures' ? { leverage: form.leverage } : {}) }
-      : null,
+      : {
+          ...(form.live_capital ? { live_capital: form.live_capital } : {}),
+          ...(form.market_type === 'futures' ? { leverage: form.leverage } : {}),
+        },
     params: withLeverage(paramsRef.value ? paramsRef.value.values() : {}),
     stop_action: form.stop_action,
   }
@@ -228,6 +232,11 @@ onMounted(init)
               <div v-if="!onlineAccounts.length" class="hint">
                 {{ t('instx.noOnlineAccount') }} <router-link to="/accounts">{{ t('nav.accounts') }}</router-link>
               </div>
+            </el-form-item>
+            <el-form-item :label="t('livex.capital')" :error="errOf('paper_config.live_capital')">
+              <el-input-number v-model="form.live_capital" :min="1" :step="100" controls-position="right" :placeholder="t('livex.optional')" />
+              <span class="suffix">USDT</span>
+              <div class="hint">{{ t('livex.capitalHelp') }}</div>
             </el-form-item>
           </template>
           <template v-else>

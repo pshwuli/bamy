@@ -61,7 +61,7 @@ export const instancesApi = {
   list: (q: Query) => http.get<Page<Instance>>(P.instances.list, q),
   get: (id: Id) => http.get<Instance>(P.instances.one(id)),
   create: (body: InstanceInput) => http.post<Instance>(P.instances.list, body, { silent: true }),
-  update: (id: Id, body: { name?: string; params?: Record<string, unknown>; stop_action?: string }) =>
+  update: (id: Id, body: { name?: string; params?: Record<string, unknown>; stop_action?: string; paper_config?: Record<string, unknown> }) =>
     http.patch<Instance>(P.instances.one(id), body, { silent: true }),
   start: (id: Id) => http.post<Action>(P.instances.start(id), undefined, { silent: true }),
   stop: (id: Id) => http.post<Action>(P.instances.stop(id), undefined, { silent: true }),

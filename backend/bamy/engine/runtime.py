@@ -857,6 +857,10 @@ class Engine:
             if result.filled_price:
                 o.filled_price = Decimal(str(result.filled_price))
             o.fee = Decimal(str(result.fee or 0))
+            if result.fee_currency:
+                o.fee_currency = result.fee_currency[:16]
+            elif o.account_id is None and result.fee:
+                o.fee_currency = "USDT"           # 模拟盘手续费一律按 USDT 扣
             o.status = result.status
             if result.status == "filled":
                 o.filled_at = datetime.utcnow()
@@ -1481,7 +1485,28 @@ class Engine:
                 inst = await db.get(Instance, run.instance_id)
                 breach = await risk_engine.check_drawdown(db, inst, float(equity), float(peak), run.day_start_equity)
             else:
+                # 实盘：按本实例成交推算权益（口径见 services/live_equity.py），没设本金就只记盈亏不做回撤风控
+                from bamy.services.live_equity import live_pnl
+
+                inst = await db.get(Instance, run.instance_id)
+                lp = await live_pnl(db, inst)
                 breach = None
+                if lp["equity"] is not None:
+                    equity = Decimal(str(lp["equity"]))
+                    prev = (await db.execute(select(PaperSnapshot.peak_equity).where(
+                        PaperSnapshot.instance_id == run.instance_id).order_by(PaperSnapshot.id.desc()).limit(1))).scalar()
+                    peak = max(Decimal(str(prev or 0)), equity, Decimal(str(lp["initial"])))
+                    drawdown = (peak - equity) / peak if peak > 0 else Decimal(0)
+                    db.add(PaperSnapshot(instance_id=run.instance_id, owner_id=run.owner_id, equity=equity,
+                                         balance=Decimal(str(lp["initial"] + lp["realized"])),
+                                         positions=json.dumps(positions, default=str),
+                                         realized_pnl=Decimal(str(lp["realized"])),
+                                         unrealized_pnl=Decimal(str(lp["unrealized"])),
+                                         peak_equity=peak, drawdown=drawdown.quantize(Decimal("0.000001"))))
+                    day = datetime.utcnow().strftime("%Y-%m-%d")
+                    if run.day_key != day:
+                        run.day_key, run.day_start_equity = day, float(equity)
+                    breach = await risk_engine.check_drawdown(db, inst, float(equity), float(peak), run.day_start_equity)
             await db.commit()
         if breach is not None:
             await self.push("risk.breached", {"instance_id": run.instance_id, "owner_id": run.owner_id,

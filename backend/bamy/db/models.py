@@ -301,6 +301,7 @@ class PaperAccount(Base):
 
 
 class PaperSnapshot(Base):
+    """权益快照。名字沿用历史，现在模拟盘和实盘都写（实盘口径见 services/live_equity.py）。"""
     __tablename__ = "paper_snapshots"
     id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     instance_id: Mapped[int] = mapped_column(ForeignKey("instances.id"), nullable=False)
