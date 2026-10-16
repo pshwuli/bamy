@@ -6,6 +6,24 @@
 
 ---
 
+## [1.0.0] - 2026-10-16
+
+首个完整版：按 `DESIGN.md` 与 13 篇设计文档实现全部模块。
+
+### 新增
+
+- 后端（`backend/bamy/`，FastAPI + SQLAlchemy 2 异步）：用户与权限（JWT、刷新轮换、2FA、API Token、邀请码）、账号（币安现货验证、加密存储、探活）、策略中心与插件中心（扫描、校验、热加载、四个检查点拦截链、fail_mode）、实例生命周期与崩溃恢复、订单五段处理、模拟撮合、风控与熔断、保护单、对账、审计、分享、备份恢复、WebSocket 推送、Prometheus 指标、接口限流
+- 用户数据流（`engine/userstream.py`）：基于 ccxt.pro `watch_orders`，走币安 WebSocket API 签名订阅
+- 前端（`frontend/`，Vue 3 + Element Plus）：《前端页面结构》列出的全部用户、管理员、超级管理员与访客页面，中英文、亮暗主题、响应式
+- 内置扩展：`grid_strategy`、`dca_strategy`、`ma_cross` 三个策略，`telegram_notify`、`audit_export` 两个插件
+- 部署：`docker/docker-compose.yml`（PostgreSQL + 应用 + nginx）、`backend/Dockerfile`、`frontend/Dockerfile`、`scripts/{start,stop,backup,restore,healthcheck}.sh`（docker / native 两种模式）
+- 测试：`tests/backend/`（44 个用例：接口全流程、隔离、插件拦截语义、模拟撮合、WebSocket、边界原则、崩溃恢复）
+
+### 变更
+
+- 用户数据流文档由 listenKey 改为 WebSocket API 签名订阅（币安现货已于 2026-02-20 下线 listenKey）
+- 快速开始与 README 的启动命令改为实际可用的 `scripts/start.sh` 流程
+
 ## [未发布]
 
 ### 新增

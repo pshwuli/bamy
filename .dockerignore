@@ -1,0 +1,44 @@
+# 构建上下文为仓库根目录（backend/Dockerfile 与 frontend/Dockerfile 共用）
+.git
+.gitignore
+.claude
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# 密钥与环境文件绝不进镜像
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+*.crt
+
+# 运行时数据、日志、备份
+data
+backend/data
+logs
+backups
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.log
+*.tar.gz
+*.tar.gz.enc
+
+# 前端依赖与产物（镜像内重新构建）
+**/node_modules
+frontend/dist
+frontend/.vite
+coverage
+
+# 文档与测试不进运行镜像
+docs
+tests
+backend/tests
+*.md

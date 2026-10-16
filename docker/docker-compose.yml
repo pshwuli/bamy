@@ -1,0 +1,170 @@
+# BAMY Docker Compose（单机部署，《部署与运行》2.2 第一推荐）
+#
+# 用法（在仓库根目录）：
+#   cp docker/.env.docker.example docker/.env   # 然后生成并填写密钥与数据库密码
+#   scripts/start.sh                             # 或：docker compose -f docker/docker-compose.yml up -d
+#
+# 变量来源：compose 自动读取本目录下的 .env（即 docker/.env）做插值。
+# app 容器只拿到下面 environment 里显式列出的变量，数据库超级用户密码不会进入应用容器。
+#
+# 可选服务：
+#   redis —— profile "redis"。启用：docker/.env 里写 COMPOSE_PROFILES=redis，
+#            或 docker compose --profile redis up -d
+
+name: bamy
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"   # 按大小轮转（《部署与运行》10.5）
+    max-file: "5"
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: bamy-backend:latest
+    restart: unless-stopped
+    environment:
+      # ---- 必需项（《配置项》3.1）----
+      APP_ENV: ${APP_ENV:-prod}
+      SECRET_KEY: ${SECRET_KEY:-}
+      ENCRYPT_KEY: ${ENCRYPT_KEY:-}
+      # 未显式提供时，用独立应用账号拼出连接串（不使用数据库超级用户，《配置项》3.3）
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${BAMY_DB_USER:-bamy_app}:${BAMY_DB_PASSWORD:-}@db:5432/${POSTGRES_DB:-bamy}}
+      # ---- 可选项（《配置项》3.2）----
+      APP_NAME: ${APP_NAME:-BAMY}
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_DIR: /app/logs
+      ENABLE_LIVE_TRADING: ${ENABLE_LIVE_TRADING:-false}
+      ACCESS_TOKEN_EXPIRE: ${ACCESS_TOKEN_EXPIRE:-1800}
+      REFRESH_TOKEN_EXPIRE: ${REFRESH_TOKEN_EXPIRE:-604800}
+      ALLOW_REGISTER: ${ALLOW_REGISTER:-true}
+      ALLOW_EMAIL_REGISTER: ${ALLOW_EMAIL_REGISTER:-false}
+      ALLOW_INVITE_REGISTER: ${ALLOW_INVITE_REGISTER:-false}
+      AUTO_RECOVER_ON_BOOT: ${AUTO_RECOVER_ON_BOOT:-true}
+      RECOVER_CONCURRENCY: ${RECOVER_CONCURRENCY:-5}
+      RECOVER_TIMEOUT: ${RECOVER_TIMEOUT:-60}
+      RECONCILE_BEFORE_RECOVER: ${RECONCILE_BEFORE_RECOVER:-true}
+      RECONCILE_INTERVAL: ${RECONCILE_INTERVAL:-30}
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-60}
+      MAX_INSTANCES_PER_USER: ${MAX_INSTANCES_PER_USER:-50}
+      EXTENSION_DIR: /app/extensions
+      STRATEGY_DIR: /app/extensions/strategies
+      PLUGIN_DIR: /app/extensions/plugins
+      INIT_ADMIN_USER: ${INIT_ADMIN_USER:-}
+      INIT_ADMIN_PASS: ${INIT_ADMIN_PASS:-}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TLS: ${SMTP_TLS:-starttls}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - app_data:/app/data
+      - app_logs:/app/logs
+      - ../config:/app/config:ro
+      - ../extensions:/app/extensions:ro
+      # 方案 B（后端托管前端静态）时取消注释：
+      # - ../frontend/dist:/app/frontend/dist:ro
+    ports:
+      # 只绑本机回环，供 /setup 首次初始化与本机运维；对外流量走 nginx
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+        required: false   # redis profile 未启用时不阻塞 app
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s   # 启动总超时 120 秒（《部署与运行》6.4）
+    stop_grace_period: 60s # 优雅停止总超时 60 秒（7.3）
+    logging: *default-logging
+    networks: [backend, frontend]
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bamy}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      # 供 initdb 脚本创建独立应用账号
+      BAMY_DB_USER: ${BAMY_DB_USER:-bamy_app}
+      BAMY_DB_PASSWORD: ${BAMY_DB_PASSWORD:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    # 不映射端口：数据库只在内部网络可见（《部署与运行》14.3 网络只内网）
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *default-logging
+    networks: [backend]
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+    networks: [backend]
+
+  nginx:
+    # 默认直接用官方镜像 + 挂载宿主机 frontend/dist（前端未就绪时也能起，只是静态为空）。
+    # 方案 A（镜像自带静态产物）：注释掉 image 与 dist 卷，改用下面的 build：
+    #   build:
+    #     context: ..
+    #     dockerfile: frontend/Dockerfile
+    #     target: nginx
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # 启用 HTTPS 后： - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../frontend/dist:/usr/share/nginx/html:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+    networks: [frontend]
+
+volumes:
+  app_data:
+  app_logs:
+  db_data:
+  redis_data:
+  nginx_logs:
+
+networks:
+  backend:
+  frontend:

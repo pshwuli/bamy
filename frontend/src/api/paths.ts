@@ -1,0 +1,157 @@
+type Id = string | number
+const e = (v: Id) => encodeURIComponent(String(v))
+
+export const P = {
+  setup: '/api/setup',
+  setupStatus: '/api/setup/status',
+  health: '/health',
+
+  auth: {
+    login: '/api/auth/login',
+    register: '/api/auth/register',
+    refresh: '/api/auth/refresh',
+    logout: '/api/auth/logout',
+    me: '/api/auth/me',
+    changePassword: '/api/auth/change-password',
+    forgotPassword: '/api/auth/forgot-password',
+    resetPassword: '/api/auth/reset-password',
+    tfaEnable: '/api/auth/2fa/enable',
+    tfaVerify: '/api/auth/2fa/verify',
+    tfaDisable: '/api/auth/2fa/disable',
+    tfaRecovery: '/api/auth/2fa/recovery-codes',
+  },
+
+  user: {
+    profile: '/api/user/profile',
+    auditLogs: '/api/user/audit-logs',
+    apiTokens: '/api/user/api-tokens',
+    apiToken: (id: Id) => `/api/user/api-tokens/${e(id)}`,
+    sessions: '/api/user/sessions',
+    session: (id: Id) => `/api/user/sessions/${e(id)}`,
+    notificationSettings: '/api/user/notification-settings',
+    preferences: '/api/user/preferences',
+  },
+
+  accounts: {
+    list: '/api/accounts',
+    batch: '/api/accounts/batch',
+    one: (id: Id) => `/api/accounts/${e(id)}`,
+    credentials: (id: Id) => `/api/accounts/${e(id)}/credentials`,
+    verify: (id: Id) => `/api/accounts/${e(id)}/verify`,
+    balance: (id: Id) => `/api/accounts/${e(id)}/balance`,
+    positions: (id: Id) => `/api/accounts/${e(id)}/positions`,
+    orders: (id: Id) => `/api/accounts/${e(id)}/orders`,
+    health: (id: Id) => `/api/accounts/${e(id)}/health`,
+  },
+
+  strategies: {
+    list: '/api/strategies',
+    one: (id: Id) => `/api/strategies/${e(id)}`,
+  },
+
+  plugins: {
+    list: '/api/plugins',
+    one: (id: Id) => `/api/plugins/${e(id)}`,
+  },
+
+  bindings: {
+    list: '/api/plugin-bindings',
+    one: (id: Id) => `/api/plugin-bindings/${e(id)}`,
+    health: (id: Id) => `/api/plugin-bindings/${e(id)}/health`,
+  },
+
+  instances: {
+    list: '/api/instances',
+    one: (id: Id) => `/api/instances/${e(id)}`,
+    start: (id: Id) => `/api/instances/${e(id)}/start`,
+    stop: (id: Id) => `/api/instances/${e(id)}/stop`,
+    pause: (id: Id) => `/api/instances/${e(id)}/pause`,
+    resume: (id: Id) => `/api/instances/${e(id)}/resume`,
+    status: (id: Id) => `/api/instances/${e(id)}/status`,
+    orders: (id: Id) => `/api/instances/${e(id)}/orders`,
+    positions: (id: Id) => `/api/instances/${e(id)}/positions`,
+    logs: (id: Id) => `/api/instances/${e(id)}/logs`,
+    auditLogs: (id: Id) => `/api/instances/${e(id)}/audit-logs`,
+    changeStrategy: (id: Id) => `/api/instances/${e(id)}/change-strategy`,
+    resetPaper: (id: Id) => `/api/instances/${e(id)}/reset-paper`,
+    closePosition: (id: Id, pid: Id) => `/api/instances/${e(id)}/positions/${e(pid)}/close`,
+    closeBatch: (id: Id) => `/api/instances/${e(id)}/positions/close-batch`,
+    closeAll: (id: Id) => `/api/instances/${e(id)}/positions/close-all`,
+    forceClose: (id: Id) => `/api/instances/${e(id)}/positions/force-close`,
+    cancelOrder: (id: Id, oid: Id) => `/api/instances/${e(id)}/orders/${e(oid)}/cancel`,
+    cancelAll: (id: Id) => `/api/instances/${e(id)}/orders/cancel-all`,
+    paperAccount: (id: Id) => `/api/instances/${e(id)}/paper-account`,
+    paperSnapshots: (id: Id) => `/api/instances/${e(id)}/paper-snapshots`,
+    shareTokens: (id: Id) => `/api/instances/${e(id)}/share-tokens`,
+  },
+
+  orders: {
+    list: '/api/orders',
+    export: '/api/orders/export',
+    one: (id: Id) => `/api/orders/${e(id)}`,
+    fills: (id: Id) => `/api/orders/${e(id)}/fills`,
+  },
+
+  paper: {
+    compare: '/api/paper/compare',
+    metrics: '/api/paper/compare/metrics',
+    export: '/api/paper/compare/export',
+  },
+
+  share: {
+    list: '/api/share-tokens',
+    one: (id: Id) => `/api/share-tokens/${e(id)}`,
+    view: (token: string) => `/view/${e(token)}`,
+  },
+
+  admin: {
+    overview: '/api/admin/overview',
+    users: '/api/admin/users',
+    user: (id: Id) => `/api/admin/users/${e(id)}`,
+    userDisable: (id: Id) => `/api/admin/users/${e(id)}/disable`,
+    userEnable: (id: Id) => `/api/admin/users/${e(id)}/enable`,
+    userResetPassword: (id: Id) => `/api/admin/users/${e(id)}/reset-password`,
+    accounts: '/api/admin/accounts',
+    accountDisable: (id: Id) => `/api/admin/accounts/${e(id)}/disable`,
+    accountEnable: (id: Id) => `/api/admin/accounts/${e(id)}/enable`,
+    instances: '/api/admin/instances',
+    forceStop: (id: Id) => `/api/admin/instances/${e(id)}/force-stop`,
+    pluginsReload: '/api/admin/plugins/reload',
+    plugin: (id: Id) => `/api/admin/plugins/${e(id)}`,
+    pluginHealth: (id: Id) => `/api/admin/plugins/${e(id)}/health`,
+    networkHosts: '/api/admin/plugins/network-hosts',
+    globalBindings: '/api/admin/plugin-bindings',
+    allBindings: '/api/admin/plugin-bindings/all',
+    binding: (id: Id) => `/api/admin/plugin-bindings/${e(id)}`,
+    reconcileTrigger: '/api/admin/reconcile/trigger',
+    reconcileDiffs: '/api/admin/reconcile/diffs',
+    reconcileDiff: (id: Id) => `/api/admin/reconcile/diffs/${e(id)}`,
+    reconcileResolve: (id: Id) => `/api/admin/reconcile/diffs/${e(id)}/resolve`,
+    circuitBreakers: '/api/admin/circuit-breakers',
+    circuitBreaker: (id: Id) => `/api/admin/circuit-breakers/${e(id)}`,
+    circuitRecover: (id: Id) => `/api/admin/circuit-breakers/${e(id)}/recover`,
+    systemLogs: '/api/admin/system-logs',
+    auditLogs: '/api/admin/audit-logs',
+    auditLog: (id: Id) => `/api/admin/audit-logs/${e(id)}`,
+    configs: '/api/admin/configs',
+    invites: '/api/admin/invites',
+    inviteDisable: (id: Id) => `/api/admin/invites/${e(id)}/disable`,
+    inviteEnable: (id: Id) => `/api/admin/invites/${e(id)}/enable`,
+    inviteUsages: (id: Id) => `/api/admin/invites/${e(id)}/usages`,
+  },
+
+  super: {
+    configs: '/api/super/configs',
+    userRole: (id: Id) => `/api/super/users/${e(id)}/role`,
+    user: (id: Id) => `/api/super/users/${e(id)}`,
+    backups: '/api/super/backups',
+    backupDownload: (id: Id) => `/api/super/backups/${e(id)}/download`,
+    backupRestore: (id: Id) => `/api/super/backups/${e(id)}/restore`,
+  },
+
+  ws: {
+    user: '/ws/user',
+    admin: '/ws/admin',
+    view: (token: string) => `/ws/view/${e(token)}`,
+  },
+} as const

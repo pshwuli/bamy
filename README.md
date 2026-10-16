@@ -134,11 +134,19 @@ bamy/
 最短路径：
 
 ```
-cp .env.example .env     # 填 SECRET_KEY、ENCRYPT_KEY、DATABASE_URL
-docker compose up -d
+cp docker/.env.docker.example docker/.env   # 填 SECRET_KEY、ENCRYPT_KEY、POSTGRES_PASSWORD、BAMY_DB_PASSWORD
+(cd frontend && npm ci && npm run build)
+scripts/start.sh
 ```
 
-然后访问 `http://localhost:8000/setup` 创建第一个管理员。
+然后访问 `http://localhost/setup` 创建第一个管理员。不用 Docker 时见快速开始 3.2（`BAMY_MODE=native scripts/start.sh`，端口 8000）。
+
+开发与测试：
+
+```
+.venv/bin/python -m pytest              # 后端测试（tests/backend）
+cd frontend && npm run typecheck        # 前端类型检查
+```
 
 完整步骤、环境要求与成功判据见 [快速开始](docs/guides/快速开始.md)。
 

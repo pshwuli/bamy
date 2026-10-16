@@ -1,0 +1,82 @@
+kind: strategy
+
+id: ma_cross
+name: 均线交叉
+version: 1.0.0
+author: bamy
+description: 快线上穿慢线买入、下穿卖出的均线交叉策略（现货只做多）
+tags: [trend, ma, spot]
+min_bamy_version: 1.0.0
+license: MIT
+
+capabilities:
+  close_position: true
+  close_positions: true
+  close_all: true
+  close_partial: true
+  cancel_order: false
+  cancel_all: false
+  list_positions: true
+  pause: false
+  resume: false
+  reset: false
+
+params:
+  - key: timeframe
+    label: K 线周期
+    type: select
+    default: 15m
+    options:
+      - { value: 1m, label: 1 分钟 }
+      - { value: 5m, label: 5 分钟 }
+      - { value: 15m, label: 15 分钟 }
+      - { value: 1h, label: 1 小时 }
+      - { value: 4h, label: 4 小时 }
+    group: 基础
+
+  - key: fast_period
+    label: 快线周期
+    type: int
+    default: 7
+    min: 2
+    max: 100
+    required: true
+    group: 基础
+
+  - key: slow_period
+    label: 慢线周期
+    type: int
+    default: 25
+    min: 3
+    max: 300
+    required: true
+    group: 基础
+
+  - key: amount
+    label: 每次开仓数量
+    type: float
+    default: 0.001
+    min: 0
+    required: true
+    group: 基础
+
+  - key: max_positions
+    label: 最多持仓笔数
+    type: int
+    default: 1
+    min: 1
+    max: 20
+    help: 每次金叉开一笔，达到上限后不再开
+    group: 风险
+
+  - key: check_interval
+    label: 检查间隔
+    type: duration
+    default: 60
+    min: 5
+    help: 两次拉 K 线计算均线的最短间隔（秒）
+    group: 高级
+
+runtime:
+  tick_interval: 1
+  market_type: [spot]

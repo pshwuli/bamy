@@ -1,0 +1,59 @@
+kind: plugin
+
+id: audit_export
+name: 审计导出
+version: 1.0.0
+author: bamy
+description: 累积订单、自动停止与对账差异事件，供导出与通知
+tags: [audit]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [global, user, account]
+default_scope: user
+allow_multiple: false
+
+data_scope: own
+
+priority: 100
+
+hooks:
+  - event: order.filled
+    handler: on_order_filled
+  - event: order.rejected
+    handler: on_order_rejected
+  - event: instance.auto_stopped
+    handler: on_auto_stopped
+  - event: reconcile.diff
+    handler: on_reconcile_diff
+
+settings:
+  - key: max_events
+    label: 最多保留事件数
+    type: int
+    default: 500
+    min: 10
+    max: 5000
+    group: 存储
+
+  - key: clear_on_unbind
+    label: 解绑时清空记录
+    type: bool
+    default: false
+    group: 存储
+
+  - key: notify_important
+    label: 重要事件即时通知
+    type: bool
+    default: true
+    help: 订单被拒、实例自动停止、对账差异时立即发通知
+    group: 通知
+
+  - key: notify_every
+    label: 每累计多少条汇报一次
+    type: int
+    default: 50
+    min: 0
+    max: 1000
+    help: 0 表示不汇报
+    group: 通知

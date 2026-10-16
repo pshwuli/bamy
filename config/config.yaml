@@ -1,0 +1,65 @@
+# BAMY 配置文件（《配置项》第四节）
+#
+# 优先级：环境变量 > 本文件 > 数据库配置 > 内置默认值。修改后需重启生效。
+# 缺失本文件时全部使用默认值，不报错。下列值即默认值。
+# 敏感项（密钥、数据库密码）不在此明文填写，一律用环境变量注入（《配置项》7.2），
+# 版本库里只写占位符 xxx。
+
+# 应用标识与监听 → 接口模块
+app:
+  name: BAMY
+  env: prod            # dev / prod，被环境变量 APP_ENV 覆盖
+  host: 0.0.0.0
+  port: 8000
+
+# 连接与连接池 → 数据层
+database:
+  # 实际连接串由环境变量 DATABASE_URL 提供；此处仅为占位
+  url: postgresql+asyncpg://user:xxx@localhost/bamy
+  pool_size: 20        # 常驻连接数
+  max_overflow: 10     # 峰值可超出的连接数
+  pool_timeout: 30     # 取连接等待上限（秒），超时即报错，不无限等待
+
+# 密钥与 token 生命周期 → 用户模块
+security:
+  secret_key: xxx      # 占位，必须由环境变量 SECRET_KEY 注入
+  encrypt_key: xxx     # 占位，必须由环境变量 ENCRYPT_KEY 注入
+  token_expire: 1800   # 访问 token 有效期（秒）
+  refresh_expire: 604800  # 刷新 token 有效期（秒）
+  password_min_length: 8
+
+# 恢复、对账、探活、行情新鲜度 → 引擎
+engine:
+  recover_concurrency: 5      # 启动恢复并发数
+  recover_timeout: 60         # 单实例恢复超时（秒）
+  reconcile_interval: 30      # 定时对账间隔（秒）
+  health_check_interval: 60   # 账号探活间隔（秒）
+  market_stale_threshold: 5   # 行情超过该秒数未更新视为过期
+
+# 限频与风控阈值 → 风控模块
+risk:
+  max_orders_per_minute: 60
+  max_orders_per_day: 1000
+  max_daily_loss: 0.1         # 单日最大亏损比例
+  max_drawdown: 0.3           # 最大回撤比例
+
+# 监控与日志 → 接口模块、审计模块
+monitor:
+  enabled: true
+  prometheus_port: 9090
+  log_level: info
+
+# 扩展根目录与两个子目录 → 策略中心、插件中心
+# 两个子目录都必须存在且可读；每个子目录是一个扩展，目录名即扩展 ID；以 __ 开头的跳过
+extensions:
+  dir: ./extensions
+  strategy_dir: ./extensions/strategies
+  plugin_dir: ./extensions/plugins
+
+# 插件拦截与健康度参数 → 插件中心
+plugins:
+  intercept_timeout_ms: 200   # 拦截型钩子默认超时（毫秒），1-2000
+  error_threshold: 10         # 连续异常自动停用阈值（次），0 表示不自动停用
+  network_enabled: true       # 插件出网全局总闸
+  max_per_checkpoint: 16      # 单个检查点最多拦截插件数，1-64
+  max_hooks: 32               # 单个插件最多钩子数，1-128

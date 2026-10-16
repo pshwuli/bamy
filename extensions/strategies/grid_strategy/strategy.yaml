@@ -1,0 +1,93 @@
+kind: strategy
+
+id: grid_strategy
+name: 网格策略
+version: 1.0.0
+author: bamy
+description: 经典网格策略，在价格区间内低买高卖，适合震荡行情
+tags: [grid, spot]
+min_bamy_version: 1.0.0
+license: MIT
+
+capabilities:
+  close_position: true
+  close_positions: true
+  close_all: true
+  close_partial: true
+  cancel_order: true
+  cancel_all: true
+  set_leverage: false
+  set_margin_mode: false
+  set_position_mode: false
+  list_positions: true
+  pause: true
+  resume: true
+  reset: false
+
+params:
+  - key: grid_num
+    label: 网格数量
+    type: int
+    default: 10
+    min: 1
+    max: 200
+    required: true
+    help: 把价格区间等分成几档
+    group: 基础
+
+  - key: upper_price
+    label: 价格上界
+    type: float
+    default: 100.0
+    min: 0
+    required: true
+    group: 基础
+
+  - key: lower_price
+    label: 价格下界
+    type: float
+    default: 80.0
+    min: 0
+    required: true
+    group: 基础
+
+  - key: amount_per_grid
+    label: 每格数量
+    type: float
+    default: 0.001
+    min: 0
+    required: true
+    help: 每一档买入/卖出的基础币数量
+    group: 基础
+
+  - key: order_type
+    label: 委托类型
+    type: select
+    default: limit
+    options:
+      - { value: limit, label: 限价 }
+      - { value: market, label: 市价 }
+    group: 高级
+
+  - key: enable_stop_loss
+    label: 启用止损
+    type: bool
+    default: false
+    group: 风险
+
+  - key: stop_loss_pct
+    label: 止损百分比
+    type: float
+    default: 5.0
+    min: 0
+    max: 100
+    suffix: "%"
+    help: 价格跌破下界该百分比后全部平仓并暂停
+    group: 风险
+    depends_on:
+      key: enable_stop_loss
+      value: true
+
+runtime:
+  tick_interval: 1
+  market_type: [spot]

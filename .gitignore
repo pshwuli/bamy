@@ -47,3 +47,7 @@ docs/archive/*.bak
 *.swp
 .DS_Store
 Thumbs.db
+!docker/.env.docker.example
+
+# 备份产物（含数据库全量导出）
+backups/

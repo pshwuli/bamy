@@ -1,0 +1,81 @@
+kind: strategy
+
+id: dca_strategy
+name: 定投加仓
+version: 1.0.0
+author: bamy
+description: 按固定间隔买入固定金额，可选在下跌时追加买入
+tags: [dca, spot]
+min_bamy_version: 1.0.0
+license: MIT
+
+capabilities:
+  close_position: false
+  close_positions: false
+  close_all: false
+  close_partial: false
+  cancel_order: false
+  cancel_all: false
+  list_positions: false
+  pause: true
+  resume: true
+  reset: true
+
+params:
+  - key: quote_amount
+    label: 每次投入
+    type: float
+    default: 10.0
+    min: 0
+    required: true
+    suffix: USDT
+    help: 每次定投花费的计价币金额
+    group: 基础
+
+  - key: interval
+    label: 定投间隔
+    type: duration
+    default: 86400
+    min: 60
+    required: true
+    help: 两次定投之间的时长（秒）
+    group: 基础
+
+  - key: max_rounds
+    label: 最多定投次数
+    type: int
+    default: 0
+    min: 0
+    help: 0 表示不限
+    group: 基础
+
+  - key: enable_dip_buy
+    label: 启用跌幅加仓
+    type: bool
+    default: false
+    group: 加仓
+
+  - key: dip_pct
+    label: 加仓跌幅
+    type: percent
+    default: 5
+    help: 相对持仓均价下跌达到该百分比时追加一次
+    group: 加仓
+    depends_on:
+      key: enable_dip_buy
+      value: true
+
+  - key: dip_cooldown
+    label: 加仓冷却
+    type: duration
+    default: 3600
+    min: 60
+    help: 两次跌幅加仓之间的最短时长（秒）
+    group: 加仓
+    depends_on:
+      key: enable_dip_buy
+      value: true
+
+runtime:
+  tick_interval: 5
+  market_type: [spot]

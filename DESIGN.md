@@ -62,7 +62,7 @@ BAMY 是一套多用户交易自动化后台，核心能力是把策略挂到币
 │      strategies/                                                    │
 │        grid_strategy/    strategy.yaml + strategy.py                │
 │        dca_strategy/     strategy.yaml + strategy.py                │
-│        macd_cross/       strategy.yaml + strategy.py                │
+│        ma_cross/         strategy.yaml + strategy.py                │
 │      plugins/                                                       │
 │        telegram_notify/  plugin.yaml + plugin.py                    │
 │        audit_export/     plugin.yaml + plugin.py                    │
@@ -84,7 +84,7 @@ BAMY 是一套多用户交易自动化后台，核心能力是把策略挂到币
 │   币安适配器（基于ccxt + 原生WebSocket）                             │
 │   ├── 现货（U 本位合约预留扩展位，未实现）                           │
 │   ├── REST 限频管理（权重感知）                                      │
-│   ├── WebSocket 用户数据流（listenKey 管理 + 自动续期）              │
+│   ├── WebSocket 用户数据流（WS API 签名订阅 + 断线重订）             │
 │   └── 错误码映射（429/418/401 → 行为策略）                           │
 │                                                                     │
 │   扩展位：OKX / Bybit / 其他交易所（预留接口）                        │
@@ -244,7 +244,7 @@ BAMY 是一套多用户交易自动化后台，核心能力是把策略挂到币
 
 职责： 通过 WebSocket 实时接收币安账户变更。
 
-· listenKey 管理：创建、续期、失效重建
+· 订阅管理：WebSocket API 签名订阅、失效重订（币安现货已下线 listenKey）
 · 事件处理：订单成交、仓位变更、余额变更
 · 断线重连：自动重连 + 状态补拉
 · 与对账引擎的关系：WebSocket 做实时，对账做兜底

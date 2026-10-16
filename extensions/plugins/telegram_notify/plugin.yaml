@@ -1,0 +1,89 @@
+kind: plugin
+
+id: telegram_notify
+name: Telegram 通知
+version: 1.0.0
+author: bamy
+description: 把系统告警、成交与自动停止推送到 Telegram，并演示下单拦截
+tags: [notify]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [global, user, account]
+default_scope: account
+allow_multiple: false
+
+data_scope: own
+
+priority: 100
+
+network:
+  enabled: true
+  hosts:
+    - api.telegram.org
+  timeout_ms: 5000
+
+hooks:
+  - event: system.alert
+    handler: on_alert
+  - event: order.filled
+    handler: on_filled
+  - event: instance.auto_stopped
+    handler: on_auto_stopped
+  - checkpoint: order.before_submit
+    handler: before_order
+    fail_mode: open
+    timeout_ms: 200
+
+settings:
+  - key: bot_token
+    label: Bot Token
+    type: secret
+    required: true
+    help: 从 BotFather 获取
+    group: 凭据
+
+  - key: chat_id
+    label: 会话 ID
+    type: string
+    required: true
+    max_length: 64
+    group: 凭据
+
+  - key: min_level
+    label: 最低等级
+    type: select
+    default: warn
+    options:
+      - { value: info, label: 信息 }
+      - { value: warn, label: 警告 }
+      - { value: error, label: 错误 }
+    group: 规则
+
+  - key: rate_limit
+    label: 每分钟最多推送
+    type: int
+    default: 20
+    min: 1
+    max: 60
+    group: 规则
+
+  - key: block_market_orders
+    label: 拒绝市价单
+    type: bool
+    default: false
+    help: 开启后 order.before_submit 对市价单返回 DENY
+    group: 拦截演示
+
+  - key: max_order_amount
+    label: 单笔数量上限
+    type: float
+    default: 0
+    min: 0
+    help: 大于 0 时，超过上限的订单被 MODIFY 为上限数量
+    group: 拦截演示
+
+dependencies:
+  python: ">=3.11"
+  packages:
+    - httpx>=0.25.0
