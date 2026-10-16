@@ -11,7 +11,7 @@ function goBack() {
 </script>
 
 <template>
-  <div class="page-header">
+  <div class="page-header" :class="{ 'has-back': back, 'has-sub': !!subtitle || !!$slots.sub }">
     <div class="ph-left">
       <el-button v-if="back" :icon="ArrowLeft" circle size="small" :aria-label="$t('common.back')" @click="goBack" />
       <div>
@@ -29,5 +29,11 @@ function goBack() {
 .ph-title { margin: 0; font-size: 20px; font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ph-sub { color: var(--el-text-color-secondary); font-size: 13px; margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .ph-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-@media (max-width: 767px) { .ph-actions { width: 100%; } .ph-actions :deep(.el-button) { flex: 1 1 auto; margin-left: 0; } }
+@media (max-width: 767px) {
+  .ph-actions { width: 100%; }
+  .ph-actions :deep(.el-button) { flex: 1 1 auto; margin-left: 0; }
+  /* 手机顶栏已显示页面名；一级页面不再重复大标题，详情页（带返回、副标题）保留 */
+  .page-header:not(.has-back):not(.has-sub) .ph-left { display: none; }
+  .page-header:not(.has-back):not(.has-sub) { margin-bottom: 10px; }
+}
 </style>

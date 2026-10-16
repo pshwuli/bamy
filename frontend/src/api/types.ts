@@ -173,6 +173,25 @@ export interface Strategy {
   runtime?: { tick_interval?: number; symbols?: string[]; market_type?: string[] }
   dependencies?: Record<string, unknown>
   instance_count?: number
+  suitability?: StrategySuitability | null
+  backtest?: StrategyBacktest | null
+}
+
+/** strategy.yaml 的 suitability 段：适合多少资金、什么行情、什么交易对、风险档位 */
+export interface StrategySuitability {
+  capital?: { min_usdt?: number; sweet_spot_usdt?: [number, number]; note?: string }
+  market?: string
+  symbols?: string
+  risk?: { level: '低' | '中' | '高' | '极高' | string; note?: string }
+}
+
+/** strategy.yaml 的 backtest 段：样本外回测摘要（字段为已格式化的字符串，原样展示） */
+export interface StrategyBacktest {
+  period?: string
+  cost?: string
+  summary?: string
+  caveat?: string
+  results?: { symbol: string; win_rate?: string; profit_factor?: number; cagr?: string; max_drawdown?: string; buy_hold_drawdown?: string }[]
 }
 
 export type Scope = 'global' | 'user' | 'account'

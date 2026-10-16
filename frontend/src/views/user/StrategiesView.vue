@@ -10,6 +10,7 @@ import { pretty } from '@/utils/format'
 import PageHeader from '@/components/PageHeader.vue'
 import FilterBar from '@/components/FilterBar.vue'
 import CapabilityBadges from '@/components/CapabilityBadges.vue'
+import StrategyFit from '@/components/StrategyFit.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -159,8 +160,7 @@ onMounted(load)
           <div v-if="s.tags?.length" class="sc-tags">
             <el-tag v-for="tg in s.tags" :key="tg" size="small" effect="plain" disable-transitions>{{ tg }}</el-tag>
           </div>
-          <div class="sc-row muted small">{{ t('strategy.paramsCount') }}：{{ s.params_count ?? s.params_schema?.length ?? 0 }}</div>
-          <CapabilityBadges :caps="s.capabilities" />
+          <StrategyFit :strategy="s" compact />
           <footer class="sc-actions">
             <el-button size="small" @click="openDetail(s)">{{ t('strategy.viewDetail') }}</el-button>
             <el-button size="small" type="primary" :disabled="!s.loaded" @click="createInstance(s)">{{ t('strategy.createInstance') }}</el-button>
@@ -190,6 +190,7 @@ onMounted(load)
 
     <el-dialog v-model="detailOpen" :title="detail?.name || detail?.id || ''" width="760px" append-to-body>
       <div v-if="detail" v-loading="detailLoading">
+        <StrategyFit :strategy="detail" class="mb-fit" />
         <el-descriptions :column="2" border size="small" :title="t('extv.metaInfo')">
           <el-descriptions-item label="ID"><code>{{ detail.id }}</code></el-descriptions-item>
           <el-descriptions-item :label="t('strategy.version')">{{ detail.version || '-' }}</el-descriptions-item>
@@ -241,4 +242,5 @@ onMounted(load)
 .table-wrap { overflow-x: auto; }
 .err { white-space: pre-wrap; word-break: break-all; }
 .sub-title { font-size: 14px; margin: 16px 0 8px; }
+.mb-fit { margin-bottom: 18px; }
 </style>

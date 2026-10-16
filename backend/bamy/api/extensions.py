@@ -146,6 +146,30 @@ async def list_strategies(ctx: Ctx = Depends(current), keyword: str | None = Non
                                           if k in registry.strategies and not registry.strategies[k].loaded]})
 
 
+# ======================================================================== 公开：主页用
+PUBLIC_SYMBOLS = ("BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT")
+
+
+@router.get("/api/public/overview")
+async def public_overview():
+    """未登录可访问：主页展示的行情与内置策略摘要。只读、无用户数据；行情来自币安公开接口（经引擎缓存）。"""
+    import asyncio
+
+    from bamy.engine.market import market
+
+    async def one(sym: str):
+        try:
+            t = await asyncio.wait_for(market.ticker(sym), timeout=5)
+            return {"symbol": sym, "price": t.get("price"), "ts": t.get("ts")}
+        except Exception:  # noqa: BLE001 - 行情不可达时主页照常显示
+            return {"symbol": sym, "price": None, "ts": None}
+
+    tickers = await asyncio.gather(*(one(s) for s in PUBLIC_SYMBOLS))
+    strategies = [{k: v for k, v in _strategy_out(e).items() if k in {"id", "name", "description", "tags", "suitability", "backtest"}}
+                  for e in sorted(registry.strategies.values(), key=lambda e: e.id) if e.loaded]
+    return ok({"tickers": tickers, "strategies": strategies})
+
+
 @router.get("/api/strategies/{strategy_id}")
 async def get_strategy(strategy_id: str, ctx: Ctx = Depends(current)):
     ext = registry.get_strategy(strategy_id)

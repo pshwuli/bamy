@@ -23,14 +23,18 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const { t } = useI18n()
 const router = useRouter()
+const { isMobile } = useBreakpoint()
 
 const { items, loading, loadedOnce, error, page, pageSize, total, filters, load, search, resetFilters } = useTable<Instance>(
   (q) => instancesApi.list(q),
   { keyword: '', status: '', paper: '' as '' | 'true' | 'false', strategy_id: '', account_id: '' as '' | number },
 )
+
+const activeFilters = computed(() => [filters.status, filters.paper, filters.strategy_id, filters.account_id].filter((v) => v !== '' && v != null).length)
 
 const STATUSES = ['created', 'running', 'paused', 'stopped', 'error'] as const
 const strategies = shallowRef<Strategy[]>([])
@@ -264,7 +268,7 @@ function onReset() {
       <el-button type="primary" :icon="Plus" @click="router.push('/instances/new')">{{ t('instance.create') }}</el-button>
     </PageHeader>
 
-    <FilterBar :loading="loading" @search="search" @reset="onReset">
+    <FilterBar :loading="loading" :active="activeFilters" @search="search" @reset="onReset">
       <el-input v-model="filters.keyword" :placeholder="t('instx.searchPh')" :aria-label="t('common.search')" clearable @keyup.enter="search" />
       <el-select v-model="filters.status" :placeholder="t('instx.allStatus')" :aria-label="t('common.status')" clearable>
         <el-option v-for="s in STATUSES" :key="s" :value="s" :label="t(`status.instance.${s}`)" />
@@ -281,7 +285,7 @@ function onReset() {
       </el-select>
     </FilterBar>
 
-    <div class="batch-bar">
+    <div v-if="!isMobile" class="batch-bar">
       <span class="muted">{{ t('instx.selected', { n: selection.length }) }}</span>
       <el-button size="small" :disabled="!selection.length" :loading="batching" @click="batch('start')">{{ t('instance.batchStart') }}</el-button>
       <el-button size="small" :disabled="!selection.length" :loading="batching" @click="batch('stop')">{{ t('instance.batchStop') }}</el-button>
@@ -296,7 +300,41 @@ function onReset() {
       @action="router.push('/instances/new')"
     />
     <template v-else>
-      <div class="table-wrap">
+      <!-- 手机：卡片列表，主要操作直接可点 -->
+      <div v-if="isMobile" v-loading="loading" class="inst-cards">
+        <article v-for="row in items" :key="row.id" class="ic">
+          <router-link :to="`/instances/${row.id}`" class="ic-top">
+            <span class="ic-name">{{ row.name }}</span>
+            <StatusBadge kind="instance" :value="row.status" />
+          </router-link>
+          <router-link :to="`/instances/${row.id}`" class="ic-mid">
+            <span class="ic-meta">{{ row.symbol }} · {{ row.strategy_name || row.strategy_id }} · {{ row.paper ? t('common.paper') : t('common.live') }}</span>
+            <span class="ic-figs">
+              <span class="num ic-eq">{{ fmtMoney(row.equity) }}</span>
+              <span class="num" :class="pnlClass(returnRate(row))">{{ fmtPct(returnRate(row)) }}</span>
+            </span>
+            <span v-if="row.last_error" class="ic-err">{{ row.last_error }}</span>
+          </router-link>
+          <div class="ic-actions">
+            <el-button v-if="canStop(row)" :loading="busy === row.id" @click="act(row, 'stop')">{{ t('instance.stop') }}</el-button>
+            <el-button v-else type="primary" :loading="busy === row.id" @click="act(row, 'start')">{{ t('instance.start') }}</el-button>
+            <el-button v-if="row.status === 'running' && pausable(row)" @click="act(row, 'pause')">{{ t('instance.pause') }}</el-button>
+            <el-button v-else-if="row.status === 'paused' && resumable(row)" @click="act(row, 'resume')">{{ t('instance.resume') }}</el-button>
+            <el-dropdown trigger="click">
+              <el-button :aria-label="t('common.more')">{{ t('common.more') }}</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item :disabled="!isStopped(row)" @click="openEdit(row)">{{ t('common.edit') }}</el-dropdown-item>
+                  <el-dropdown-item :disabled="!isStopped(row)" @click="openChange(row)">{{ t('instance.changeStrategy') }}</el-dropdown-item>
+                  <el-dropdown-item divided :disabled="!isStopped(row)" @click="remove(row)"><span class="danger-text">{{ t('common.delete') }}</span></el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+        </article>
+        <p v-if="!loading && !items.length" class="muted ic-empty">{{ t('common.noMatch') }}</p>
+      </div>
+      <div v-else class="table-wrap">
         <el-table v-loading="loading" :data="items" row-key="id" stripe class="resp-table" @selection-change="(v: Instance[]) => (selection = v)">
           <el-table-column type="selection" width="42" />
           <el-table-column :label="t('instance.name')" min-width="150" show-overflow-tooltip>
@@ -406,6 +444,20 @@ function onReset() {
 </template>
 
 <style scoped>
+.inst-cards { display: grid; gap: 10px; min-height: 80px; }
+.ic { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.ic-top, .ic-mid { display: flex; color: inherit; text-decoration: none !important; }
+.ic-top { justify-content: space-between; align-items: center; gap: 10px; padding: 14px 14px 4px; }
+.ic-name { font-weight: 600; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ic-mid { flex-direction: column; gap: 8px; padding: 0 14px 12px; }
+.ic-meta { font-size: 12px; color: var(--ink-3); }
+.ic-figs { display: flex; align-items: baseline; gap: 12px; }
+.ic-eq { font-size: 20px; color: var(--ink); }
+.ic-err { font-size: 12px; color: var(--down); }
+.ic-actions { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface-2); }
+.ic-actions > :deep(.el-button), .ic-actions > :deep(.el-dropdown) { flex: 1; margin: 0; }
+.ic-actions :deep(.el-dropdown .el-button) { width: 100%; }
+.ic-empty { text-align: center; padding: 24px 0; }
 .batch-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .muted { color: var(--el-text-color-secondary); font-size: 13px; }
 .table-wrap { overflow-x: auto; }

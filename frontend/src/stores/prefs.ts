@@ -27,7 +27,7 @@ const media = typeof window !== 'undefined' ? window.matchMedia('(prefers-color-
 
 export const usePrefs = defineStore('prefs', {
   state: (): State => ({
-    theme: 'auto',
+    theme: 'dark',   // 专业交易终端默认深色（PRODUCT.md）；用户可在设置里改
     locale: (localStorage.getItem('bamy.locale') as Locale) || 'zh-CN',
     timeFormat: '24h',
     timezone: 'Asia/Shanghai',

@@ -8,6 +8,7 @@ declare module 'vue-router' {
     title?: string
     public?: boolean
     guestOnly?: boolean
+    landing?: boolean
     role?: Role
     breadcrumb?: { label: string; to?: string }[]
     dynamicTitle?: string
@@ -73,6 +74,8 @@ const adminRoutes: RouteRecordRaw[] = [
 ]
 
 const routes: RouteRecordRaw[] = [
+  // 主页：未登录看到产品介绍；已登录也能访问（导航里有"进入后台"）
+  { path: '/', component: () => import('@/views/LandingView.vue'), meta: { public: true, landing: true } },
   {
     path: '/',
     component: () => import('@/layouts/AuthLayout.vue'),
@@ -88,7 +91,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/',
     component: () => import('@/layouts/AppLayout.vue'),
-    children: [{ path: '', redirect: '/dashboard' }, ...userRoutes, ...adminRoutes],
+    children: [...userRoutes, ...adminRoutes],
   },
   { path: '/404', component: () => import('@/views/error/NotFoundView.vue'), meta: { public: true } },
   { path: '/:pathMatch(.*)*', component: () => import('@/views/error/NotFoundView.vue'), meta: { public: true } },
@@ -106,6 +109,8 @@ router.beforeEach(async (to) => {
 
   const initialized = await auth.checkSetup()
   if (!initialized && to.path !== '/setup') return '/setup'
+  // 已登录用户直接打开根路径时进总览；从后台主动点品牌/首页链接（带 ?home=1）仍可看主页
+  if (to.meta.landing && tokenStore.access && auth.user && to.query.home !== '1') return '/dashboard'
   if (initialized && to.path === '/setup') return '/login'
 
   if (to.meta.public) {

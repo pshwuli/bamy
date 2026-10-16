@@ -484,7 +484,7 @@ async def _prefs(ctx: Ctx) -> UserPreference:
 
 
 NOTIFY_DEFAULT = {"email_enabled": False, "webhook_url": "", "event_types": ["instance.error", "system.alert"]}
-PREF_DEFAULT = {"theme": "auto", "language": "zh-CN", "time_format": "24h", "timezone": "Asia/Shanghai", "page_size": 20}
+PREF_DEFAULT = {"theme": "dark", "language": "zh-CN", "time_format": "24h", "timezone": "Asia/Shanghai", "page_size": 20}
 
 
 @router.get("/api/user/notification-settings")

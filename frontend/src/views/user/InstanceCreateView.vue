@@ -15,6 +15,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import CapabilityBadges from '@/components/CapabilityBadges.vue'
+import StrategyFit from '@/components/StrategyFit.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -146,6 +147,7 @@ onMounted(init)
           <el-form-item v-if="strategy" :label="t('instx.strategyCaps')">
             <div>
               <p v-if="strategy.description" class="desc">{{ strategy.description }}</p>
+              <StrategyFit :strategy="strategy" compact :capital="form.paper ? form.paper_balance : null" />
               <CapabilityBadges :caps="strategy.capabilities" />
             </div>
           </el-form-item>

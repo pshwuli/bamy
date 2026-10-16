@@ -15,6 +15,7 @@ RULES: list[tuple[str, int, int, str]] = [
     ("/api/super/", 60, 300, "user"),
     ("/api/admin/", 60, 300, "user"),
     ("/api/view/", 60, 60, "path"),
+    ("/api/public/", 60, 60, "ip"),
     ("/view/", 60, 60, "path"),
     ("/api/", 60, 120, "user"),
 ]

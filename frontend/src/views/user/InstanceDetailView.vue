@@ -9,6 +9,8 @@ import { ApiError, fieldErrors } from '@/api/http'
 import type { LogEntry, Order, Position, Row, SchemaField, ShareToken, Strategy } from '@/api/types'
 import { useTable } from '@/composables/useTable'
 import { useLive } from '@/composables/useLive'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { MoreFilled } from '@element-plus/icons-vue'
 import { confirm } from '@/composables/useConfirm'
 import { attempt, handleError } from '@/composables/useErrors'
 import { useAuth } from '@/stores/auth'
@@ -131,9 +133,9 @@ async function loadRecentOrders() {
 }
 
 function refreshAll() {
-  void loadInstance()
+  // loadPaper 依赖 inst.paper，必须等实例详情回来再取，否则首屏模拟账户与净值曲线一直为空
+  void loadInstance().then(() => loadPaper())
   void loadPositions()
-  void loadPaper()
   void loadRecentOrders()
 }
 
@@ -550,6 +552,14 @@ const accountLabel = computed(() => {
   if (!i) return '-'
   return i.paper ? t('common.paper') : i.account_name || (i.account_id ? `#${i.account_id}` : '-')
 })
+
+const { isMobile } = useBreakpoint()
+function onMore(cmd: string) {
+  if (cmd === 'close') void closeAllPositions()
+  else if (cmd === 'edit') startEditParams()
+  else if (cmd === 'change') openChange()
+  else if (cmd === 'delete') void removeInstance()
+}
 </script>
 
 <template>
@@ -567,7 +577,7 @@ const accountLabel = computed(() => {
               <el-tag size="small" :type="inst.paper ? 'info' : 'warning'" disable-transitions>{{ inst.paper ? t('common.paper') : t('common.live') }}</el-tag>
             </span>
           </template>
-          <template v-if="isOwner">
+          <template v-if="isOwner && !isMobile">
             <el-button v-if="active" type="warning" :loading="acting" @click="act('stop')">{{ t('instance.stop') }}</el-button>
             <el-button v-else type="primary" :loading="acting" @click="act('start')">{{ t('instance.start') }}</el-button>
             <el-button v-if="inst.status === 'running'" :disabled="!caps.pause" :title="caps.pause ? '' : t('instx.pauseUnsupported')" @click="act('pause')">{{ t('instance.pause') }}</el-button>
@@ -576,17 +586,45 @@ const accountLabel = computed(() => {
             <el-button :disabled="!stopped" :title="stopped ? '' : t('instance.needStopped')" @click="startEditParams">{{ t('common.edit') }}</el-button>
             <el-button :disabled="!stopped" :title="stopped ? '' : t('instance.needStopped')" @click="openChange">{{ t('instance.changeStrategy') }}</el-button>
             <el-button type="danger" plain :disabled="!stopped" @click="removeInstance">{{ t('common.delete') }}</el-button>
+          <template v-if="isOwner && isMobile">
+            <div class="m-actions">
+              <el-button v-if="active" type="warning" :loading="acting" @click="act('stop')">{{ t('instance.stop') }}</el-button>
+              <el-button v-else type="primary" :loading="acting" @click="act('start')">{{ t('instance.start') }}</el-button>
+              <el-button v-if="inst.status === 'running' && caps.pause" @click="act('pause')">{{ t('instance.pause') }}</el-button>
+              <el-button v-else-if="inst.status === 'paused' && caps.resume" @click="act('resume')">{{ t('instance.resume') }}</el-button>
+              <el-button v-else :disabled="!positions.length" :loading="closing" @click="closeAllPositions">{{ t('instance.close') }}</el-button>
+              <el-dropdown trigger="click" @command="onMore">
+                <el-button :icon="MoreFilled" :aria-label="t('tab.more')" />
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="inst.status === 'running' && caps.pause" command="close" :disabled="!positions.length">{{ t('instance.close') }}</el-dropdown-item>
+                    <el-dropdown-item command="edit" :disabled="!stopped">{{ t('common.edit') }}{{ stopped ? '' : `（${t('instance.needStopped')}）` }}</el-dropdown-item>
+                    <el-dropdown-item command="change" :disabled="!stopped">{{ t('instance.changeStrategy') }}</el-dropdown-item>
+                    <el-dropdown-item command="delete" :disabled="!stopped" divided><span class="danger-text">{{ t('common.delete') }}</span></el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </template>
           </template>
         </PageHeader>
 
         <el-alert v-if="!isOwner" type="info" :title="t('instx.notOwner')" :closable="false" show-icon class="mb" />
         <el-alert v-if="inst.last_error" type="error" :title="`${t('instance.lastError')}：${inst.last_error}`" :closable="false" show-icon class="mb" />
-        <p class="note">{{ t('instance.noPluginNote') }}</p>
+        <p v-if="!isMobile" class="note">{{ t('instance.noPluginNote') }}</p>
 
         <el-tabs v-model="tab">
           <!-- 概览 -->
           <el-tab-pane :label="t('instance.tabOverview')" name="overview">
-            <div class="grid-cards">
+            <div v-if="isMobile" class="m-figs">
+              <div class="m-eq"><span>{{ t('instance.equity') }}</span><b class="num">{{ fmtMoney(equity) }}</b></div>
+              <dl>
+                <div><dt>{{ t('instance.returnRate') }}</dt><dd class="num" :class="pnlClass(returnRate)">{{ fmtPct(returnRate) }}</dd></div>
+                <div><dt>{{ t('instance.maxDrawdown') }}</dt><dd class="num">{{ maxDrawdown == null ? '—' : fmtPct(maxDrawdown, 2, false) }}</dd></div>
+                <div><dt>{{ t('instance.runtime') }}</dt><dd class="num">{{ fmtDuration(runSecs) }}</dd></div>
+              </dl>
+            </div>
+            <div v-else class="grid-cards">
               <StatCard :label="t('instance.equity')" :value="fmtMoney(equity)" class="big" />
               <StatCard :label="t('instance.returnRate')" :value="fmtPct(returnRate)" :tone="returnRate == null ? '' : returnRate >= 0 ? 'up' : 'down'" />
               <StatCard :label="t('instance.maxDrawdown')" :value="maxDrawdown == null ? '-' : fmtPct(maxDrawdown, 2, false)" />
@@ -600,7 +638,7 @@ const accountLabel = computed(() => {
                   <el-button v-if="isOwner" size="small" type="danger" plain :disabled="!stopped" :title="stopped ? '' : t('instance.needStopped')" @click="openReset">{{ t('instance.resetPaper') }}</el-button>
                 </div>
               </template>
-              <el-descriptions v-if="paper" :column="3" border size="small" class="desc-resp">
+              <el-descriptions v-if="paper" :column="isMobile ? 2 : 3" border size="small" class="desc-resp">
                 <el-descriptions-item :label="t('instance.balance')">{{ fmtMoney(paper.balance) }}</el-descriptions-item>
                 <el-descriptions-item :label="t('instance.equity')">{{ fmtMoney(paper.equity) }}</el-descriptions-item>
                 <el-descriptions-item :label="t('instance.initial')">{{ fmtMoney(paper.initial_balance) }}</el-descriptions-item>
@@ -848,6 +886,15 @@ const accountLabel = computed(() => {
 </template>
 
 <style scoped>
+.m-actions { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; width: 100%; }
+.m-actions > :deep(.el-button) { margin: 0; height: 44px; }
+.m-actions :deep(.el-dropdown .el-button) { height: 44px; width: 48px; }
+.m-figs { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+.m-eq { display: flex; flex-direction: column; gap: 4px; }
+.m-eq span, .m-figs dt { font-size: 12px; color: var(--ink-3); }
+.m-eq b { font-size: 30px; font-weight: 500; letter-spacing: -0.02em; }
+.m-figs dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.m-figs dd { margin: 4px 0 0; font-size: 16px; }
 .meta { display: inline-flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .note { color: var(--el-text-color-secondary); font-size: 13px; margin: 0 0 8px; }
 .mb { margin-bottom: 12px; }
