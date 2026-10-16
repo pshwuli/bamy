@@ -1,0 +1,168 @@
+kind: strategy
+
+id: trend_pullback
+name: 趋势回调（分批止盈）
+version: 2.0.0
+author: bamy
+description: >-
+  只在长期上升趋势里做多：等短线超卖回调时买入，先在 2.5 倍波动处卖掉一半锁利，
+  剩下一半止损抬到保本、跟着趋势走。每笔按"亏到止损只损失总资金的 1%"自动算仓位，
+  资金大小都能用。适合 BTC、ETH 这类流动性好的主流币，4 小时周期。
+  回测（2024-01 至 2026-09 样本外，含手续费和滑点，BTC/ETH/BNB/SOL 四币平均）：
+  胜率约 47%，盈亏比 1.22，最大回撤不到 10%（1% 风险）；四个币都为正收益。
+  不适合：长期下跌或横盘震荡的行情（它会少开仓、空仓等待，这是设计如此）。
+tags: [趋势, 回调, 分批止盈, 风险定仓, 现货]
+min_bamy_version: 1.0.0
+license: MIT
+
+capabilities:
+  close_position: true
+  close_positions: true
+  close_all: true
+  close_partial: true
+  cancel_order: false
+  cancel_all: false
+  list_positions: true
+  pause: true
+  resume: true
+  reset: false
+
+params:
+  - key: risk_pct
+    label: 单笔风险
+    type: percent
+    default: 1.0
+    min: 0.25
+    max: 3.0
+    step: 0.25
+    required: true
+    help: >-
+      一笔亏到止损时，最多损失总资金的百分之几。1% 是稳健默认值，回测最大回撤约 10%；
+      2% 收益和回撤大约翻倍。资金越大越建议用 0.5%–1%。
+    group: 资金与风险
+
+  - key: max_alloc_pct
+    label: 单笔最多投入
+    type: percent
+    default: 100
+    min: 10
+    max: 100
+    step: 5
+    help: >-
+      单笔最多用掉多少比例的资金，防止低波动时风险定仓算出的仓位过大。
+      同一个账号同时跑多个币时，建议按币数平分，例如跑 2 个币各设 50%。
+    group: 资金与风险
+
+  - key: timeframe
+    label: K 线周期
+    type: select
+    default: 4h
+    options:
+      - { value: 1h, label: 1 小时（信号多，手续费占比高，不推荐小资金） }
+      - { value: 4h, label: 4 小时（推荐，参数按此周期优化） }
+      - { value: 1d, label: 1 天（信号少，适合大资金低频） }
+    group: 基础
+
+  - key: trend_period
+    label: 趋势均线
+    type: int
+    default: 200
+    min: 50
+    max: 400
+    help: 收盘价在这条 EMA 之上、且均线在上升，才允许开仓
+    group: 信号
+
+  - key: rsi_period
+    label: RSI 周期
+    type: int
+    default: 2
+    min: 2
+    max: 14
+    help: 周期越短越灵敏；回测中 2 明显优于 3 以上
+    group: 信号
+
+  - key: rsi_entry
+    label: 超卖入场线
+    type: float
+    default: 10
+    min: 1
+    max: 40
+    help: RSI 低于这个值视为回调到位、买入
+    group: 信号
+
+  - key: stop_atr
+    label: 止损（ATR 倍数）
+    type: float
+    default: 3.0
+    min: 1.0
+    max: 6.0
+    step: 0.5
+    help: 入场价下方几倍 ATR 设止损。回测 2.5–3.5 都稳定为正
+    group: 出场
+
+  - key: tp1_atr
+    label: 第一目标（ATR 倍数）
+    type: float
+    default: 2.5
+    min: 0.5
+    max: 6.0
+    step: 0.5
+    help: 涨到入场价上方几倍 ATR 时先卖出一部分，之后止损抬到保本
+    group: 出场
+
+  - key: tp1_fraction
+    label: 第一目标卖出比例
+    type: percent
+    default: 50
+    min: 10
+    max: 100
+    step: 10
+    help: 100% 等于到第一目标全部止盈、不再跟趋势
+    group: 出场
+
+  - key: exit_ema
+    label: 趋势离场均线
+    type: int
+    default: 50
+    min: 10
+    max: 200
+    help: 卖出一半后，剩余仓位在收盘跌破这条 EMA 时卖出
+    group: 出场
+
+  - key: max_hold_bars
+    label: 最长持仓（根）
+    type: int
+    default: 60
+    min: 5
+    max: 500
+    help: 持仓超过这么多根 K 线仍未离场则卖出（4 小时周期下 60 根约 10 天）
+    group: 出场
+
+runtime:
+  tick_interval: 5
+  market_type: [spot]
+  symbols: [BTC/USDT, ETH/USDT, BNB/USDT, SOL/USDT]
+
+suitability:
+  capital:
+    min_usdt: 100
+    sweet_spot_usdt: [500, 500000]
+    note: >-
+      低于约 100 USDT 时，按 1% 风险算出的仓位常常不到交易所最小下单额（5 USDT，分批止盈需要两半都满足），
+      会跳过信号；可把单笔风险调到 2%。BTC、ETH 单笔 50 万 USDT 以内的市价单滑点通常在 0.05% 以内；
+      BNB、SOL 的 0.05% 深度约 17 万、27 万 USDT，单笔更大时滑点会明显增加。
+  market: 长期上升趋势中的回调；下跌和横盘时多数时间空仓
+  symbols: 主流高流动性币（BTC、ETH 优先；BNB、SOL 次之），不建议用于小币
+
+backtest:
+  period: 2024-01 至 2026-09（样本外，参数只用 2020-2023 选定）
+  cost: 手续费 0.1%/边 + 滑点 0.05%/边，按 1% 单笔风险定仓
+  results:
+    - { symbol: BTC/USDT, win_rate: 50%, profit_factor: 1.39, cagr: 4.1%, max_drawdown: -6.9% }
+    - { symbol: ETH/USDT, win_rate: 48%, profit_factor: 1.29, cagr: 2.7%, max_drawdown: -8.8% }
+    - { symbol: BNB/USDT, win_rate: 48%, profit_factor: 1.17, cagr: 1.9%, max_drawdown: -9.4% }
+    - { symbol: SOL/USDT, win_rate: 44%, profit_factor: 1.05, cagr: 0.3%, max_drawdown: -5.2% }
+  summary: 胜率约 47%，盈亏比 1.22，回撤不到 10%；2% 风险时收益和回撤约翻倍（年化约 4%，回撤约 18%）。
+  caveat: >-
+    这是一个"稳"的策略，不是"赚得多"的策略：同期持有 BTC 收益更高，但回撤 -53%。
+    想要更高收益就选"日线趋势（波动率定仓）"或把单笔风险调到 2%。

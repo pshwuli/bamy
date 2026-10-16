@@ -70,7 +70,9 @@ def _strategy_out(ext: Extension, detail: bool = False) -> dict[str, Any]:
            "author": m.get("author"), "description": m.get("description"), "tags": m.get("tags") or [],
            "capabilities": ext.capabilities, "params_count": len(ext.params_schema), "loaded": ext.loaded,
            "load_status": "loaded" if ext.loaded else "failed", "load_error": ext.error,
-           "warnings": m.get("_warnings") or [], "icon": (m.get("ui") or {}).get("icon")}
+           "warnings": m.get("_warnings") or [], "icon": (m.get("ui") or {}).get("icon"),
+           # 适用场景：资金规模、行情、交易对（策略包在 strategy.yaml 的 suitability 中声明）
+           "suitability": m.get("suitability") or None, "backtest": m.get("backtest") or None}
     if detail:
         out |= {"params_schema": ext.params_schema, "runtime": m.get("runtime") or {},
                 "dependencies": m.get("dependencies") or {}, "homepage": m.get("homepage"), "license": m.get("license"),

@@ -2,9 +2,11 @@ kind: strategy
 
 id: dca_strategy
 name: 定投加仓
-version: 1.0.0
+version: 1.1.0
 author: bamy
-description: 按固定间隔买入固定金额，可选在下跌时追加买入
+description: >-
+  按固定间隔买入固定金额，可选在下跌时追加买入。它不择时、不止损，没有"胜率"可言：
+  目标是长期分批建仓、摊平成本，而不是短线赚差价。适合看好某个币长期、想避免一次性买在高点的人。
 tags: [dca, spot]
 min_bamy_version: 1.0.0
 license: MIT
@@ -79,3 +81,14 @@ params:
 runtime:
   tick_interval: 5
   market_type: [spot]
+
+suitability:
+  capital:
+    min_usdt: 10
+    sweet_spot_usdt: [100, 10000000]
+    note: 每次投入金额需 ≥ 5 USDT（交易所最小下单额）；资金越大越建议把间隔拉长、单次金额调小，分散成交时点。
+  market: 任何行情都会买入；下跌越久买得越多，适合长期看多、能接受账面浮亏的资金
+  symbols: 只建议用于长期看好的主流币（BTC、ETH）
+
+backtest:
+  summary: 定投不以胜率衡量。回测中的收益完全取决于标的本身的长期走势，因此不列胜率与盈亏比。

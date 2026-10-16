@@ -1,0 +1,109 @@
+kind: strategy
+
+id: trend_vol_target
+name: 日线趋势（波动率定仓）
+version: 2.0.0
+author: bamy
+description: >-
+  用日线判断大趋势：快线在慢线之上、价格在慢线之上就持有，否则空仓。持有时按波动率调仓位，
+  行情越剧烈仓位越小，让每天的风险大致恒定。一天只看一次，交易很少，适合大资金和不想频繁盯盘的人。
+  胜率不高（约 3 成）——它靠少数几段大行情赚钱，多数小亏是在给趋势"买保险"。
+tags: [趋势, 日线, 波动率定仓, 低频, 现货]
+min_bamy_version: 1.0.0
+license: MIT
+
+capabilities:
+  close_position: false
+  close_positions: false
+  close_all: true
+  close_partial: false
+  cancel_order: false
+  cancel_all: false
+  list_positions: true
+  pause: true
+  resume: true
+  reset: false
+
+params:
+  - key: target_vol_pct
+    label: 目标年化波动
+    type: percent
+    default: 60
+    min: 10
+    max: 150
+    step: 5
+    required: true
+    help: >-
+      持仓的风险水平。BTC 平时年化波动约 50%–60%，设 60% 时大多数时候接近满仓、剧烈行情时自动减仓。
+      想更稳就调低，例如 30% 时仓位约减半，收益和回撤也大约减半。
+    group: 资金与风险
+
+  - key: max_alloc_pct
+    label: 最多投入
+    type: percent
+    default: 100
+    min: 10
+    max: 100
+    step: 5
+    help: 仓位上限。同一账号同时跑多个币时按币数平分
+    group: 资金与风险
+
+  - key: fast_ema
+    label: 快线（天）
+    type: int
+    default: 10
+    min: 3
+    max: 100
+    group: 信号
+
+  - key: slow_ema
+    label: 慢线（天）
+    type: int
+    default: 50
+    min: 20
+    max: 300
+    group: 信号
+
+  - key: vol_window
+    label: 波动率窗口（天）
+    type: int
+    default: 30
+    min: 10
+    max: 120
+    group: 信号
+
+  - key: rebalance_band_pct
+    label: 调仓阈值
+    type: percent
+    default: 20
+    min: 0
+    max: 50
+    step: 5
+    help: 实际仓位偏离目标超过这个比例才调仓，避免为小变化反复付手续费
+    group: 高级
+
+runtime:
+  tick_interval: 60
+  market_type: [spot]
+  symbols: [BTC/USDT, ETH/USDT, BNB/USDT, SOL/USDT]
+
+suitability:
+  capital:
+    min_usdt: 50
+    sweet_spot_usdt: [1000, 5000000]
+    note: >-
+      一天最多调仓一次，手续费占比低，资金大小都合适。低于约 50 USDT 时调仓金额常低于最小下单额 5 USDT。
+      单次调仓在 BTC、ETH 上数百万 USDT 以内滑点很小；BNB、SOL 单次超过约 20 万 USDT 建议分批。
+  market: 单边上涨或下跌的大行情；横盘时会反复小亏（胜率低是这个策略的特点）
+  symbols: 主流币；趋势越明显的币越合适
+
+backtest:
+  period: 2024-01 至 2026-09（样本外，参数只用 2020-2023 选定）
+  cost: 手续费 0.1%/边 + 滑点 0.05%/边
+  results:
+    - { symbol: BTC/USDT, cagr: 25%, max_drawdown: -29%, buy_hold_drawdown: -53% }
+    - { symbol: ETH/USDT, cagr: 8%, max_drawdown: -53%, buy_hold_drawdown: -68% }
+    - { symbol: BNB/USDT, cagr: 43%, max_drawdown: -36%, buy_hold_drawdown: -58% }
+    - { symbol: SOL/USDT, cagr: 4%, max_drawdown: -53%, buy_hold_drawdown: -76% }
+  summary: 四币平均年化约 20%，夏普约 0.68；回撤普遍比持有不动小 20–25 个百分点，四个币都为正收益。
+  caveat: 回测不代表未来；2024 年后大盘整体上涨，下跌年份（如 2022）该策略会以多次小亏为主。

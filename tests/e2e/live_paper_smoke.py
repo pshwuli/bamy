@@ -22,10 +22,8 @@ async def main() -> None:
         last = float(price["price"])
         specs = [
             (f"smoke-dca-{SUFFIX}", "dca_strategy", {"quote_amount": 50, "interval": 3600}),
-            (f"smoke-grid-{SUFFIX}", "grid_strategy", {"grid_num": 6, "upper_price": round(last * 1.01, 2),
-                                             "lower_price": round(last * 0.99, 2), "amount_per_grid": 0.0005}),
-            (f"smoke-ma-{SUFFIX}", "ma_cross", {"timeframe": "1m", "fast_period": 3, "slow_period": 8, "amount": 0.0005,
-                                      "check_interval": 5}),
+            (f"smoke-tp-{SUFFIX}", "trend_pullback", {"timeframe": "1h", "risk_pct": 1.0}),
+            (f"smoke-tv-{SUFFIX}", "trend_vol_target", {"target_vol_pct": 60}),
         ]
         ids = {}
         for name, sid, params in specs:

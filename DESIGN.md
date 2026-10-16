@@ -60,9 +60,9 @@ BAMY 是一套多用户交易自动化后台，核心能力是把策略挂到币
 │                              扩  展  层                             │
 │    extensions/                                                      │
 │      strategies/                                                    │
-│        grid_strategy/    strategy.yaml + strategy.py                │
+│        trend_pullback/   strategy.yaml + strategy.py                │
+│        trend_vol_target/ strategy.yaml + strategy.py                │
 │        dca_strategy/     strategy.yaml + strategy.py                │
-│        ma_cross/         strategy.yaml + strategy.py                │
 │      plugins/                                                       │
 │        telegram_notify/  plugin.yaml + plugin.py                    │
 │        audit_export/     plugin.yaml + plugin.py                    │

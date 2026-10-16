@@ -35,7 +35,7 @@ async def main() -> None:
         await c.post(f"/api/instances/{iid}/start", headers=h)
         await asyncio.sleep(6)
         await c.post("/api/instances", headers=h, json={
-            "name": "演示网格", "strategy_id": "ma_cross", "symbol": "ETH/USDT", "paper": True, "paper_balance": 5000})
+            "name": "演示趋势回调", "strategy_id": "trend_pullback", "symbol": "ETH/USDT", "paper": True, "paper_balance": 5000})
         r = await c.post(f"/api/instances/{iid}/share-tokens", headers=h, json={
             "expires_in_days": 7, "show_equity": True, "show_positions": True, "show_orders": True,
             "show_params": True, "show_logs": True})

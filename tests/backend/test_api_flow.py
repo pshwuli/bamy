@@ -79,7 +79,7 @@ async def test_api_version_prefix(client, user_h):
 async def test_strategies_and_plugins(client, user_h):
     r = await client.get("/api/strategies", headers=user_h)
     ids = {s["id"] for s in body(r)["data"]["items"]}
-    assert {"grid_strategy", "dca_strategy", "ma_cross"} <= ids
+    assert {"trend_pullback", "trend_vol_target", "dca_strategy"} <= ids
     r = await client.get("/api/strategies/dca_strategy", headers=user_h)
     assert body(r)["data"]["params_schema"]
     r = await client.get("/api/plugins", headers=user_h)
@@ -187,9 +187,9 @@ async def test_change_strategy_and_delete(client, user_h):
     inst = await _create_dca(client, user_h, name="dca-change")
     iid = inst["id"]
     r = await client.post(f"/api/instances/{iid}/change-strategy", headers=user_h,
-                          json={"strategy_id": "ma_cross", "params": {}})
+                          json={"strategy_id": "trend_pullback", "params": {}})
     assert body(r)["code"] == 0, r.text
-    assert body(r)["data"]["strategy_id"] == "ma_cross"
+    assert body(r)["data"]["strategy_id"] == "trend_pullback"
     r = await client.delete(f"/api/instances/{iid}", headers=user_h)
     assert body(r)["code"] == 0
     r = await client.get(f"/api/instances/{iid}", headers=user_h)
