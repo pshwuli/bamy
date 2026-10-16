@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import json
 
-from starlette.testclient import TestClient
-
 
 def _token(h: dict) -> str:
     return h["Authorization"].split(" ", 1)[1]
@@ -43,13 +41,34 @@ async def test_ws_hub_isolation(user_h, other_h, admin_h):
     assert {m["event"] for m in sent["admin"]} == {"order.filled", "system.alert"}
 
 
-def test_ws_auth_rejects_bad_token(app):
-    tc = TestClient(app)  # 不进入 with：不重复跑 lifespan
-    if True:
-        try:
-            with tc.websocket_connect("/ws/user?token=bad") as ws:
-                ws.receive_text()
-            closed = False
-        except Exception:  # noqa: BLE001 - 服务端以 4401 关闭
-            closed = True
-    assert closed
+class _FakeWS:
+    """最小 WebSocket 替身：记录 accept / close，不需要 starlette TestClient。"""
+
+    def __init__(self, token: str | None):
+        self.query_params = {"token": token} if token else {}
+        self.accepted = False
+        self.closed: tuple[int, str] | None = None
+
+    async def accept(self):
+        self.accepted = True
+
+    async def close(self, code: int = 1000, reason: str = ""):
+        self.closed = (code, reason)
+
+
+async def test_ws_auth_rejects_bad_token():
+    from bamy.api.ws import ws_admin, ws_user, ws_view
+
+    for handler, arg in ((ws_user, None), (ws_admin, None), (ws_view, "nope")):
+        for token in (None, "bad"):
+            ws = _FakeWS(token)
+            await (handler(ws) if arg is None else handler(ws, arg))
+            assert ws.closed and ws.closed[0] == 4401, (handler.__name__, token, ws.closed)
+
+
+async def test_ws_admin_rejects_normal_user(user_h):
+    from bamy.api.ws import ws_admin
+
+    ws = _FakeWS(_token(user_h))
+    await ws_admin(ws)
+    assert ws.closed and ws.closed[0] == 4403

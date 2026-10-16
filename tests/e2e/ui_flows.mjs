@@ -100,6 +100,8 @@ await step('切换暗色主题与英文', async () => {
 
 await step('普通用户访问管理员页被拒', async () => {
   await page.goto(base + '/admin/users', { waitUntil: 'networkidle' })
+  // 路由守卫异步校验角色后才跳 404，等跳转发生（或确认留在原地）再判断
+  await page.waitForURL((u) => !u.pathname.startsWith('/admin'), { timeout: 8000 }).catch(() => {})
   const url = page.url()
   const text = await page.locator('body').innerText()
   if (url.endsWith('/admin/users') && !/无权|不存在|404|403/.test(text)) throw new Error('普通用户看到了管理员页：' + url)

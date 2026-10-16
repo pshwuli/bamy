@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useRoute, useRouter } from 'vue-router'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminApi } from '@/api/admin'
@@ -21,15 +22,29 @@ const { isMobile } = useBreakpoint()
 const LEVELS = ['debug', 'info', 'warn', 'error', 'critical']
 const levelTone: Record<string, 'info' | 'primary' | 'warning' | 'danger'> = { debug: 'info', info: 'primary', warn: 'warning', warning: 'warning', error: 'danger', critical: 'danger' }
 
+const route = useRoute()
+const router = useRouter()
+const qs = (k: string): string => (typeof route.query[k] === 'string' ? (route.query[k] as string) : '')
+const qn = (k: string): number | undefined => (qs(k) && Number.isFinite(Number(qs(k))) ? Number(qs(k)) : undefined)
 const range = ref<[string, string] | null>(null)
 const tbl = useTable<LogEntry>(
   adminApi.systemLogs,
-  { level: '', module: '', instance_id: undefined as number | undefined, account_id: undefined as number | undefined, keyword: '' },
+  {
+    // 支持从其他页面带筛选跳转过来，如 /admin/logs?keyword=telegram_notify
+    level: qs('level'),
+    module: qs('module'),
+    instance_id: qn('instance_id'),
+    account_id: qn('account_id'),
+    keyword: qs('keyword'),
+  },
   { transform: (q) => ({ ...q, start_time: range.value?.[0], end_time: range.value?.[1] }) },
 )
 function reset() {
   range.value = null
-  void tbl.resetFilters()
+  // 清除筛选回到空条件（而不是回到 URL 带进来的初始值），同时去掉地址栏上的筛选参数
+  Object.assign(tbl.filters, { level: '', module: '', instance_id: undefined, account_id: undefined, keyword: '' })
+  if (Object.keys(route.query).length) void router.replace({ query: {} })
+  void tbl.search()
 }
 
 const mode = ref<'table' | 'stream'>('table')

@@ -17,7 +17,7 @@ const { isMobile } = useBreakpoint()
       :layout="isMobile ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper'"
       :pager-count="isMobile ? 5 : 7"
       background
-      small
+      size="small"
     />
   </div>
 </template>

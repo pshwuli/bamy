@@ -44,6 +44,13 @@ results.push({ path: 'login', ok: !page.url().includes('/login'), final: page.ur
 
 for (const p of pages) await visit(p)
 for (const p of ['/dashboard', `/instances/${instId}`, '/admin/plugins']) await visit(p, true)
+// 带筛选参数跳转到系统日志：关键字应回填到输入框
+await visit('/admin/logs?keyword=telegram_notify')
+{
+  const v = await page.getByRole('textbox', { name: /关键词|关键字|keyword/i }).first().inputValue().catch(() => '')
+  results[results.length - 1].ok &&= v === 'telegram_notify'
+  if (v !== 'telegram_notify') results[results.length - 1].errors.push(`keyword 未回填：${v}`)
+}
 // 详情页各 Tab
 await visit(`/instances/${instId}`)
 const tabs = page.getByRole('tab')
