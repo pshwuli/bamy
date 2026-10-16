@@ -188,3 +188,29 @@ def test_csv_safe():
 
     assert csv_safe("=HYPERLINK(1)") == "'=HYPERLINK(1)"
     assert csv_safe("@SUM") == "'@SUM" and csv_safe("ok") == "ok" and csv_safe(-1) == -1
+
+
+# 硬删除用户在外键约束开启时也能完整清理（含实例、订单、分享、绑定）
+async def test_hard_delete_user_with_fk(client, admin_h):
+    import asyncio
+
+    await client.post("/api/auth/register", json={"username": "goner", "password": "Goner12345"})
+    h = {"Authorization": "Bearer " + body(await client.post(
+        "/api/auth/login", json={"username": "goner", "password": "Goner12345"}))["data"]["access_token"]}
+    uid = body(await client.get("/api/auth/me", headers=h))["data"]["id"]
+    iid = body(await client.post("/api/instances", headers=h, json={
+        "name": "g1", "strategy_id": "dca_strategy", "symbol": "BTC/USDT", "paper": True,
+        "paper_balance": 100, "params": {"quote_amount": 5, "interval": 3600}}))["data"]["id"]
+    await client.post(f"/api/instances/{iid}/start", headers=h)
+    for _ in range(50):
+        if body(await client.get(f"/api/instances/{iid}/orders", headers=h))["data"]["items"]:
+            break
+        await asyncio.sleep(0.1)
+    await client.post(f"/api/instances/{iid}/stop", headers=h)
+    await client.post(f"/api/instances/{iid}/share-tokens", headers=h, json={"expires_in_days": 1})
+    await client.post("/api/plugin-bindings", headers=h, json={
+        "plugin_id": "audit_export", "scope": "user", "scope_id": uid, "settings": {}})
+    r = await client.request("DELETE", f"/api/super/users/{uid}", headers=admin_h, json={"confirm": "goner"})
+    assert body(r)["code"] == 0, r.text
+    users = body(await client.get("/api/admin/users", headers=admin_h, params={"page_size": 200}))["data"]["items"]
+    assert all(u["username"] != "goner" for u in users)

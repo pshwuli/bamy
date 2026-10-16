@@ -4,10 +4,12 @@
 """
 import asyncio
 import sys
+import time
 
 import httpx
 
 BASE = sys.argv[1]
+SUFFIX = time.strftime("%H%M%S")  # 可重复运行：实例名唯一
 
 
 async def main() -> None:
@@ -19,10 +21,10 @@ async def main() -> None:
         price = (await c.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": "BTCUSDT"})).json()
         last = float(price["price"])
         specs = [
-            ("smoke-dca", "dca_strategy", {"quote_amount": 50, "interval": 3600}),
-            ("smoke-grid", "grid_strategy", {"grid_num": 6, "upper_price": round(last * 1.01, 2),
+            (f"smoke-dca-{SUFFIX}", "dca_strategy", {"quote_amount": 50, "interval": 3600}),
+            (f"smoke-grid-{SUFFIX}", "grid_strategy", {"grid_num": 6, "upper_price": round(last * 1.01, 2),
                                              "lower_price": round(last * 0.99, 2), "amount_per_grid": 0.0005}),
-            ("smoke-ma", "ma_cross", {"timeframe": "1m", "fast_period": 3, "slow_period": 8, "amount": 0.0005,
+            (f"smoke-ma-{SUFFIX}", "ma_cross", {"timeframe": "1m", "fast_period": 3, "slow_period": 8, "amount": 0.0005,
                                       "check_interval": 5}),
         ]
         ids = {}
