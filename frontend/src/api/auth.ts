@@ -3,7 +3,7 @@ import { P } from './paths'
 import type { LoginResult, User } from './types'
 
 export const authApi = {
-  setupStatus: () => http.get<{ initialized: boolean }>(P.setupStatus, undefined, { skipAuth: true, silent: true }),
+  setupStatus: () => http.get<{ initialized: boolean; live_trading?: boolean }>(P.setupStatus, undefined, { skipAuth: true, silent: true }),
   setup: (body: { username: string; password: string }) =>
     http.post<{ user_id: number; username: string; role: string }>(P.setup, body, { skipAuth: true, silent: true }),
   login: (body: { username: string; password: string; two_factor_code?: string }) =>

@@ -15,6 +15,7 @@ from sqlalchemy import delete, func, select, update
 
 from bamy.api.deps import Ctx, Page, current, iso, num, own_account, own_instance, paging
 from bamy.api.serializers import instance_out, order_out
+from bamy.core.config import settings
 from bamy.core.errors import ApiError
 from bamy.core.response import csv_safe, ok, paginated
 from bamy.db.models import (
@@ -229,6 +230,8 @@ async def create_instance(body: InstanceIn, ctx: Ctx = Depends(current)):
             raise ApiError(40003, "模拟盘初始资金必须大于 0")
         account_id = None
     else:
+        if not settings.enable_live_trading:
+            raise ApiError(42232, "服务器没有开启实盘交易（ENABLE_LIVE_TRADING=false），现在只能建模拟盘")
         if body.account_id is None:
             raise ApiError(40004, "实盘实例必须选择账号")
         account = await own_account(ctx.db, ctx.user, body.account_id)

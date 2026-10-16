@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 
 from bamy.core.config import settings
 from bamy.core.errors import ApiError
@@ -69,7 +70,8 @@ class Engine:
     def __init__(self) -> None:
         self.running: dict[int, Running] = {}
         self._op_locks: dict[int, asyncio.Lock] = {}
-        self._books: dict[int, PaperBook] = {}
+        self._books: dict[int, PaperBook | FuturesBook] = {}
+        self._book_locks: dict[int, asyncio.Lock] = {}
         self.ready = False
         self.started_at = time.time()
         self._log_buffer: list[SystemLog] = []
@@ -212,29 +214,39 @@ class Engine:
             _engine=self, _name=inst.name, _owner_id=inst.owner_id,
         )
 
-    async def _paper_book(self, db, inst: Instance) -> PaperBook:
+    async def _paper_book(self, db, inst: Instance) -> PaperBook | FuturesBook:
         book = self._books.get(inst.id)
         if book is not None:
             return book
-        acct = (await db.execute(select(PaperAccount).where(PaperAccount.instance_id == inst.id))).scalar_one_or_none()
-        cfg = PaperConfig.from_json(inst.paper_config, {
-            "fee_rate": system_config.get("paper.default_fee_rate", 0.001),
-            "slippage": system_config.get("paper.default_slippage", 0.0005),
-            "leverage": _leverage_of(inst),
-        })
-        if acct is None:
-            initial = Decimal(str(inst.paper_balance or 10000))
-            acct = PaperAccount(instance_id=inst.id, balance=initial, positions="{}", avg_price="{}",
-                                realized_pnl=Decimal(0), peak_equity=initial, initial_balance=initial)
-            db.add(acct)
-            await db.commit()
-        if inst.market_type == "futures":
-            book = FuturesBook(acct.balance, load_futures_positions(acct.positions), acct.realized_pnl or Decimal(0), cfg)
-        else:
-            book = PaperBook(acct.balance, load_json_map(acct.positions), load_json_map(acct.avg_price),
-                             acct.realized_pnl or Decimal(0), cfg)
-        self._books[inst.id] = book
-        return book
+        # 详情页会同时发好几个请求，都可能是第一次加载：同一实例串行，避免重复建模拟账户撞唯一约束（→ 409 资源冲突）
+        async with self._book_locks.setdefault(inst.id, asyncio.Lock()):
+            book = self._books.get(inst.id)
+            if book is not None:
+                return book
+            acct = (await db.execute(select(PaperAccount).where(PaperAccount.instance_id == inst.id))).scalar_one_or_none()
+            cfg = PaperConfig.from_json(inst.paper_config, {
+                "fee_rate": system_config.get("paper.default_fee_rate", 0.001),
+                "slippage": system_config.get("paper.default_slippage", 0.0005),
+                "leverage": _leverage_of(inst),
+            })
+            if acct is None:
+                initial = Decimal(str(inst.paper_balance or 10000))
+                try:
+                    async with session_scope() as wdb:
+                        wdb.add(PaperAccount(instance_id=inst.id, balance=initial, positions="{}", avg_price="{}",
+                                             realized_pnl=Decimal(0), peak_equity=initial, initial_balance=initial))
+                        await wdb.commit()
+                except IntegrityError:
+                    pass   # 另一进程/请求刚建好，下面重新读
+                acct = (await db.execute(select(PaperAccount).where(PaperAccount.instance_id == inst.id)
+                                         .execution_options(populate_existing=True))).scalar_one()
+            if inst.market_type == "futures":
+                book = FuturesBook(acct.balance, load_futures_positions(acct.positions), acct.realized_pnl or Decimal(0), cfg)
+            else:
+                book = PaperBook(acct.balance, load_json_map(acct.positions), load_json_map(acct.avg_price),
+                                 acct.realized_pnl or Decimal(0), cfg)
+            self._books[inst.id] = book
+            return book
 
     async def _save_book(self, db, instance_id: int, book: PaperBook | FuturesBook) -> None:
         acct = (await db.execute(select(PaperAccount).where(PaperAccount.instance_id == instance_id))).scalar_one()

@@ -74,7 +74,8 @@ async def setup_status(db: AsyncSession = Depends(get_session)):
     count = await db.scalar(select(func.count(User.id))) or 0
     return ok({"initialized": count > 0, "allow_register": bool(system_config.get("register.enabled", True)),
                "invite_only": bool(system_config.get("register.invite_only", False)) or settings.allow_invite_register,
-               "allow_email_register": settings.allow_email_register})
+               "allow_email_register": settings.allow_email_register,
+               "live_trading": bool(settings.enable_live_trading)})
 
 
 @router.post("/api/setup")

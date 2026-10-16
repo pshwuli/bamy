@@ -195,3 +195,23 @@ async def test_change_strategy_renames_auto_name(client, user_h):
                           json={"strategy_id": "trend_pullback", "params": {}})
     assert body(r)["code"] == 0, r.text
     assert body(r)["data"]["name"] == registry.get_strategy("trend_pullback").meta["name"] + "-ab12"
+
+
+# 详情页并发首次加载模拟账户：不应撞唯一约束返回 409
+async def test_paper_book_concurrent_first_load(client, user_h):
+    from bamy.engine.runtime import engine
+
+    iid = body(await _instance(client, user_h, name="race-book"))["data"]["id"]
+    engine._books.pop(iid, None)
+    rs = await asyncio.gather(*(client.get(f"/api/instances/{iid}/{p}", headers=user_h)
+                                for p in ("positions", "status", "paper-account", "positions", "status")))
+    assert all(r.status_code == 200 for r in rs), [r.text for r in rs if r.status_code != 200]
+
+
+# 服务器没开实盘：建实盘实例直接说清楚，而不是建出来启动才报错
+async def test_live_instance_blocked_when_disabled(client, user_h):
+    r = await client.post("/api/instances", headers=user_h, json={
+        "name": "live-off", "strategy_id": "dca_strategy", "symbol": "BTC/USDT", "paper": False, "account_id": 1,
+        "params": {"quote_amount": 10, "interval": 3600}})
+    assert body(r)["code"] == 42232 and "ENABLE_LIVE_TRADING" in body(r)["message"]
+    assert body(await client.get("/api/setup/status"))["data"]["live_trading"] is False

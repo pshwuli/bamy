@@ -6,6 +6,7 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { instancesApi, type InstanceInput } from '@/api/instances'
 import { strategiesApi, itemsOf } from '@/api/extensions'
 import { accountsApi } from '@/api/accounts'
+import { authApi } from '@/api/auth'
 import { fieldErrors } from '@/api/http'
 import type { Account, Strategy } from '@/api/types'
 import { handleError } from '@/composables/useErrors'
@@ -46,6 +47,8 @@ const form = reactive({
 const params = ref<Record<string, unknown>>({})
 const errs = ref<Record<string, string>>({})
 const saving = ref(false)
+// 服务器没开实盘（ENABLE_LIVE_TRADING=false）时只能建模拟盘；不知道时先按开着处理，后端会再拦
+const liveEnabled = ref(true)
 
 const symbolOptions = computed(() => strategy.value?.runtime?.symbols ?? [])
 // 扫描类策略：不用选交易对，一个实例扫全部 USDT 交易对
@@ -68,7 +71,15 @@ async function init() {
   loading.value = true
   loadError.value = null
   try {
-    const [s, a] = await Promise.all([strategiesApi.list({ page_size: 100 }), accountsApi.list({ page: 1, page_size: 100 })])
+    const [s, a, st] = await Promise.all([
+      strategiesApi.list({ page_size: 100 }),
+      accountsApi.list({ page: 1, page_size: 100 }),
+      authApi.setupStatus().catch(() => null),
+    ])
+    if (st && st.live_trading === false) {
+      liveEnabled.value = false
+      form.paper = true
+    }
     strategies.value = itemsOf(s)
     accounts.value = a.items ?? []
     const q = typeof route.query.strategy === 'string' ? route.query.strategy : ''
@@ -202,8 +213,9 @@ onMounted(init)
           <el-form-item :label="t('instance.mode')">
             <el-radio-group v-model="form.paper">
               <el-radio-button :value="true">{{ t('common.paper') }}</el-radio-button>
-              <el-radio-button :value="false">{{ t('common.live') }}</el-radio-button>
+              <el-radio-button :value="false" :disabled="!liveEnabled">{{ t('common.live') }}</el-radio-button>
             </el-radio-group>
+            <div v-if="!liveEnabled" class="hint">{{ t('mkt.liveOff') }}</div>
           </el-form-item>
           <template v-if="!form.paper">
             <el-form-item :label="t('instance.account')" prop="account_id" :error="errOf('account_id')">
