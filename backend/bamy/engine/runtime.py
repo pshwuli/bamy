@@ -1276,7 +1276,9 @@ class Engine:
             try:
                 async with session_scope() as db:
                     client = await pool.get(await db.get(Account, account_id))
-                open_ids = {o.exchange_order_id for o in await client.fetch_open_orders()}
+                # 只查这些保护单所在的交易对，每次带 symbol（不带 symbol 时币安按 40 倍权重计）
+                open_ids = {o.exchange_order_id for o in
+                            await self._open_orders_by_symbol(client, {o.symbol for o in orders})}
             except Exception as exc:  # noqa: BLE001
                 log.warning("保护检测失败 account=%s：%s", account_id, exc)
                 continue
@@ -1337,6 +1339,21 @@ class Engine:
             await self.reconcile_order(oid)
         return len(ids)
 
+    async def _account_symbols(self, account_id: int) -> set[str]:
+        """需要查挂单的交易对：只看本地还没完结的订单（对账只核对它们在交易所还在不在），没有就一次都不查。"""
+        async with session_scope() as db:
+            rows = (await db.execute(select(Order.symbol).where(
+                Order.account_id == account_id, Order.status.in_(("submitted", "partial", "unknown")))
+                .distinct())).scalars().all()
+        return {s for s in rows if s and not is_scan_symbol(s)}
+
+    async def _open_orders_by_symbol(self, client, symbols: set[str]) -> list[ExchangeOrder]:
+        """逐个交易对查挂单（每次都带 symbol：现货权重 6、合约 1；不带 symbol 时现货 80、合约 40）。"""
+        out: list[ExchangeOrder] = []
+        for sym in sorted(symbols):
+            out.extend(await client.fetch_open_orders(sym))
+        return out
+
     async def reconcile_account(self, account_id: int, reason: str = "schedule") -> dict[str, Any]:
         """持仓/余额对账：以币安为准修正并留痕。"""
         async with session_scope() as db:
@@ -1344,10 +1361,11 @@ class Engine:
             if account is None or account.deleted_at is not None:
                 return {"account_id": account_id, "skipped": True}
         diffs = 0
+        symbols = await self._account_symbols(account_id)
         try:
             client = await pool.get(account)
             balances = {b.asset: b.total for b in await client.fetch_balance()}
-            open_orders = {o.client_order_id: o for o in await client.fetch_open_orders()}
+            open_orders = {o.client_order_id: o for o in await self._open_orders_by_symbol(client, symbols)}
         except Exception as exc:  # noqa: BLE001
             if reason == "start":
                 raise ApiError(40912, f"对账失败：{exc}") from exc

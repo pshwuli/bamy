@@ -190,7 +190,10 @@ class BinanceSpotAdapter:
         raw = await self.client.cancel_order(exchange_order_id, symbol)
         return _parse_order(raw, raw.get("clientOrderId"))
 
-    async def fetch_open_orders(self, symbol: str | None = None) -> list[ExchangeOrder]:
+    async def fetch_open_orders(self, symbol: str) -> list[ExchangeOrder]:
+        """必须带 symbol：不带时币安按全市场计权重（现货 80、合约 40），对账一跑就容易限频。"""
+        if not symbol:
+            raise ValueError("fetch_open_orders 必须指定交易对")
         raw = await self.client.fetch_open_orders(symbol)
         return [_parse_order(o, o.get("clientOrderId")) for o in raw]
 

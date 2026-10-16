@@ -269,3 +269,47 @@ async def test_system_update_request(client, admin_h, user_h, tmp_path, monkeypa
     (tmp_path / "update.log").write_text("a\nb\n")
     d = body(await client.get("/api/super/update", headers=admin_h))["data"]
     assert d["installed"] and d["log"] == ["a", "b"]
+
+
+# 对账查挂单：每次都带交易对，只查本地有未完结订单的交易对（不带 symbol 时币安按 40/80 倍权重计）
+async def test_reconcile_open_orders_always_with_symbol(client, user_h, monkeypatch):
+    from decimal import Decimal
+
+    from bamy.db.models import Account, Order
+    from bamy.db.session import session_scope
+    from bamy.engine import runtime as R
+    from bamy.engine.adapters import Balance
+
+    calls = []
+
+    class FakeClient:
+        async def fetch_balance(self):
+            return [Balance("USDT", 100.0, 0.0, 100.0)]
+
+        async def fetch_open_orders(self, symbol):
+            calls.append(symbol)
+            return []
+
+        async def fetch_order_by_client_id(self, cid, symbol):
+            raise RuntimeError("Order does not exist -2013")
+
+    me = body(await client.get("/api/auth/me", headers=user_h))["data"]
+    async with session_scope() as db:
+        acc = Account(owner_id=me["id"], name="recon-acc", api_key_enc="x", api_secret_enc="y", status="online")
+        db.add(acc)
+        await db.commit()
+        aid = acc.id
+    async def fake_get(account):
+        return FakeClient()
+    monkeypatch.setattr(R.pool, "get", fake_get)
+    # 没有未完结订单 → 一次都不查
+    await R.engine.reconcile_account(aid)
+    assert calls == []
+    iid = body(await _instance(client, user_h, name="recon-inst"))["data"]["id"]
+    async with session_scope() as db:
+        for i, sym in enumerate(("ETH/USDT", "BTC/USDT", "ETH/USDT")):
+            db.add(Order(client_order_id=f"recon-{aid}-{i}", instance_id=iid, owner_id=me["id"], account_id=aid,
+                         symbol=sym, side="buy", type="limit", amount=Decimal(1), status="submitted"))
+        await db.commit()
+    await R.engine.reconcile_account(aid)
+    assert calls == ["BTC/USDT", "ETH/USDT"] and None not in calls
