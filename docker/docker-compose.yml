@@ -71,6 +71,8 @@ services:
       - app_logs:/app/logs
       - ../config:/app/config:ro
       - ../extensions:/app/extensions:ro
+      # 后台"系统更新"：应用只往这里写更新请求、读状态；真正的更新由宿主机 scripts/update.sh 执行
+      - ../data/update:/app/update
       # 方案 B（后端托管前端静态）时取消注释：
       # - ../frontend/dist:/app/frontend/dist:ro
     ports:

@@ -251,9 +251,9 @@ def create_app() -> FastAPI:
         log.exception("未处理异常 %s %s", request.method, request.url.path)
         return fail(ApiError(50001), getattr(request.state, "request_id", None))
 
-    from bamy.api import accounts, admin, auth, extensions, instances, paper, ws
+    from bamy.api import accounts, admin, auth, extensions, instances, paper, updates, ws
 
-    for module in (auth, accounts, extensions, instances, paper, admin, ws):
+    for module in (auth, accounts, extensions, instances, paper, admin, updates, ws):
         app.include_router(module.router)
 
     _mount_frontend(app)

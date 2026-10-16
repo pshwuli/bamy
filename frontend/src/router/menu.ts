@@ -1,7 +1,7 @@
 import type { Component } from 'vue'
 import {
   Odometer, Wallet, Cpu, List, DataLine, Collection, Goods, Connection, Document, Setting,
-  Monitor, User, CreditCard, Operation, Box, Finished, Warning, Notebook, Tickets, Key, Tools, FolderOpened,
+  Monitor, User, CreditCard, Operation, Box, Finished, Warning, Notebook, Tickets, Key, Tools, FolderOpened, Refresh,
 } from '@element-plus/icons-vue'
 import type { Role } from '@/api/types'
 
@@ -70,6 +70,7 @@ export const MENU: MenuGroup[] = [
     items: [
       { path: '/super/configs', label: 'nav.superConfigs', icon: Tools },
       { path: '/super/backup', label: 'nav.superBackup', icon: FolderOpened },
+      { path: '/super/update', label: 'nav.superUpdate', icon: Refresh },
     ],
   },
 ]

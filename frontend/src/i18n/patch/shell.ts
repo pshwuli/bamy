@@ -2,7 +2,7 @@
 export default {
   zh: {
     fbx: { filter: '筛选', apply: '应用' },
-    nav: { riskRules: '风控规则' },
+    nav: { riskRules: '风控规则', superUpdate: '系统更新' },
     extx: { reinstall: '重新安装', reinstallDone: '已重新安装，原有绑定已恢复' },
     notifyx: { how: '勾选的事件会出现在右上角通知中心（刷新不丢），并实时推送到下面的 Webhook 地址。', webhookHint: 'BAMY 会 POST JSON：{event, data, ts}。只接受公网 http(s) 地址，每分钟最多 30 条。可接企业微信、飞书、Telegram 机器人等。' },
     common: { saved: '已保存', deleted: '已删除', seconds: '秒', enabled: '启用' },
@@ -14,6 +14,13 @@ export default {
       t_max_order_value: '单笔金额上限', t_max_daily_value: '单日下单金额上限', t_max_daily_orders: '单日下单次数上限',
       t_max_orders_per_minute: '每分钟下单次数上限', t_symbol_whitelist: '交易对白名单', t_symbol_blacklist: '交易对黑名单',
       t_max_drawdown: '最大回撤（触发即停）', t_max_daily_loss: '单日最大亏损（触发即停）', t_symbol_cooldown: '同币成交后冷却', t_strategy_cooldown: '同策略成交后冷却', t_max_leverage: '合约最大杠杆（倍）',
+    },
+    upd: {
+      title: '系统更新', check: '检查更新', apply: '立即更新', running: '更新中…', state: '状态', current: '当前版本', branch: '分支',
+      checkedAt: '上次检查', pending: '有 {n} 个新提交：', log: '更新日志', started: '已开始更新，页面会短暂断开，完成后自动刷新状态',
+      checking: '正在检查…', applyConfirm: '会先自动备份数据库，再拉取新代码、构建、重启服务（约 3–5 分钟，期间页面会断开一会儿，运行中的实例会自动恢复）。失败会自动回滚到当前版本。确定更新？',
+      notInstalled: '服务器还没装后台更新服务。在服务器项目目录下用 root 运行一次：', stuck: '更新请求已发出但 1 分钟没人处理：后台更新服务可能没在运行，在服务器上执行 systemctl status bamy-update.path 查看',
+      note: '代码从 GitHub 当前分支拉取。服务器每 6 小时自动检查一次新版本（只检查，不会自动更新）。',
     },
     mkt: {
       type: '市场', spot: '现货', futures: 'U 本位合约', spotOnly: '这个策略只支持现货',
@@ -66,7 +73,7 @@ export default {
   },
   en: {
     fbx: { filter: 'Filter', apply: 'Apply' },
-    nav: { riskRules: 'Risk rules' },
+    nav: { riskRules: 'Risk rules', superUpdate: 'System update' },
     extx: { reinstall: 'Reinstall', reinstallDone: 'Reinstalled; existing bindings restored' },
     notifyx: { how: 'Selected events appear in the notification center (kept across reloads) and are pushed live to the webhook below.', webhookHint: 'BAMY POSTs JSON {event, data, ts}. Public http(s) URLs only, at most 30 per minute. Works with Slack, Feishu, Telegram bots and similar.' },
     common: { saved: 'Saved', deleted: 'Deleted', seconds: 'seconds', enabled: 'Enabled' },
@@ -78,6 +85,13 @@ export default {
       t_max_order_value: 'Max order value', t_max_daily_value: 'Max daily order value', t_max_daily_orders: 'Max orders per day',
       t_max_orders_per_minute: 'Max orders per minute', t_symbol_whitelist: 'Symbol allowlist', t_symbol_blacklist: 'Symbol blocklist',
       t_max_drawdown: 'Max drawdown (stops)', t_max_daily_loss: 'Max daily loss (stops)', t_symbol_cooldown: 'Cooldown after a fill (symbol)', t_strategy_cooldown: 'Cooldown after a fill (strategy)', t_max_leverage: 'Max futures leverage (x)',
+    },
+    upd: {
+      title: 'System update', check: 'Check for updates', apply: 'Update now', running: 'Updating…', state: 'Status', current: 'Current', branch: 'Branch',
+      checkedAt: 'Last checked', pending: '{n} new commit(s):', log: 'Update log', started: 'Update started; the page will disconnect briefly',
+      checking: 'Checking…', applyConfirm: 'This backs up the database, pulls the new code, builds and restarts (3–5 min; the page disconnects briefly and running instances recover). It rolls back automatically on failure. Continue?',
+      notInstalled: 'The update service is not installed on the server. Run once as root in the project directory:', stuck: 'The request has not been picked up for a minute: the update service may not be running (systemctl status bamy-update.path)',
+      note: 'Code is pulled from the current GitHub branch. The server checks for new versions every 6 hours (check only, never auto-updates).',
     },
     mkt: {
       type: 'Market', spot: 'Spot', futures: 'USDⓈ-M futures', spotOnly: 'This strategy supports spot only',

@@ -72,6 +72,7 @@ const adminRoutes: RouteRecordRaw[] = [
   { path: 'admin/invites', component: () => import('@/views/admin/InvitesView.vue'), meta: { title: 'nav.adminInvites', role: 'admin' } },
   { path: 'super/configs', component: () => import('@/views/admin/ConfigsView.vue'), meta: { title: 'nav.superConfigs', role: 'super_admin' } },
   { path: 'super/backup', component: () => import('@/views/admin/BackupView.vue'), meta: { title: 'nav.superBackup', role: 'super_admin' } },
+  { path: 'super/update', component: () => import('@/views/admin/UpdateView.vue'), meta: { title: 'nav.superUpdate', role: 'super_admin' } },
 ]
 
 const routes: RouteRecordRaw[] = [

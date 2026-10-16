@@ -29,152 +29,172 @@ capabilities:
   reset: false
 
 params:
+  # ---- 选币 ----
   - key: min_quote_volume
-    label: 粗筛：24h 成交额下限（万 U）
+    label: 最低成交额
     type: float
     default: 500
     min: 10
     max: 100000
-    help: 24 小时成交额低于这个数的币直接不看。小币滑点大、容易被操纵，建议不低于 300 万 U。
-    group: 选币
-
-  - key: min_change_pct
-    label: 细筛：近 N 小时涨幅 ≥（%）
-    type: float
-    default: 20
-    min: 1
-    max: 200
-    help: 近 N 小时（下方"窗口"）涨幅达到多少才算动量够强。做空方向时表示跌幅。
-    group: 选币
-
-  - key: max_from_high_pct
-    label: 细筛：距窗口最高价 ≥（%，负数）
-    type: float
-    default: -5
-    min: -50
-    max: 0
-    help: 当前价离窗口内最高价的距离，-5 表示最多比最高价低 5%。越接近 0 越"贴着高点"。做空时表示离最低价的距离。
+    suffix: 万U
+    help: 24 小时成交额低于这个数的币不看。小币滑点大、容易被操纵，建议不低于 300 万 U。
     group: 选币
 
   - key: window
-    label: 窗口
+    label: 统计窗口
     type: select
     default: 4h
     options:
       - { value: 1h, label: 1 小时 }
       - { value: 2h, label: 2 小时 }
-      - { value: 4h, label: 4 小时（原规则） }
+      - { value: 4h, label: 4 小时 }
       - { value: 6h, label: 6 小时 }
       - { value: 12h, label: 12 小时 }
       - { value: 1d, label: 24 小时 }
+    help: 下面"涨幅"和"距高点"按这个窗口算。
+    group: 选币
+
+  - key: min_change_pct
+    label: 窗口涨幅 ≥
+    type: float
+    default: 20
+    min: 1
+    max: 200
+    suffix: "%"
+    help: 窗口内涨幅达到多少才算动量够强。做空时表示跌幅。
+    group: 选币
+
+  - key: max_from_high_pct
+    label: 距窗口高点 ≥
+    type: float
+    default: -5
+    min: -50
+    max: 0
+    suffix: "%"
+    help: 现价比窗口最高价最多低多少，-5 表示最多低 5%。越接近 0 越"贴着高点"。做空时表示离最低价的距离。
     group: 选币
 
   - key: direction
-    label: 方向（仅合约有效）
+    label: 方向
     type: select
     default: long
     options:
-      - { value: long, label: 只做多（追涨） }
-      - { value: short, label: 只做空（追跌） }
+      - { value: long, label: 只做多 }
+      - { value: short, label: 只做空 }
       - { value: both, label: 双向 }
-    help: 现货实例永远只做多。
+    help: 只对合约有效，现货永远只做多。
     group: 选币
 
   - key: exclude
-    label: 排除的币（逗号分隔）
+    label: 排除币种
     type: string
     default: ""
     max_length: 500
-    help: 例如 "BTC,ETH"。稳定币（USDC、FDUSD 等）和杠杆代币（UP/DOWN/BULL/BEAR）已经自动排除。
+    placeholder: BTC,ETH
+    help: 逗号分隔。稳定币和杠杆代币已自动排除。
     group: 选币
 
+  # ---- 资金 ----
   - key: slots
-    label: 槽位（最多同时持有几个币）
+    label: 同时持仓数
     type: int
     default: 1
     min: 1
     max: 10
-    help: 原规则 1 个。槽位越多越分散，单个币的仓位越小。
+    suffix: 个
+    help: 最多同时拿几个币。越多越分散，每个币的仓位越小。
     group: 资金
 
   - key: position_pct
-    label: 每个槽位投入（% 权益）
+    label: 每仓投入
     type: percent
     default: 95
     min: 1
     max: 100
-    help: 每开一个仓用当前权益的百分之几（合约是保证金）。槽位 >1 时建议设成 100/槽位 以下。
+    suffix: "% 权益"
+    help: 每开一个仓用当前权益的百分之几（合约是保证金）。持仓数 >1 时建议设成 100 ÷ 持仓数 以下。
     group: 资金
 
   - key: leverage
-    label: 杠杆（仅合约）
+    label: 杠杆
     type: int
     default: 1
     min: 1
     max: 20
-    help: 合约杠杆倍数，逐仓。追涨类策略波动大，强烈建议 1–3 倍；风控默认上限 5 倍。
+    suffix: 倍
+    help: 只对合约有效，逐仓。追涨波动大，建议 1–3 倍；风控默认上限 5 倍。
     group: 资金
 
+  # ---- 出场 ----
+  - key: stop_pct
+    label: 止损
+    type: float
+    default: 4
+    min: 0.5
+    max: 50
+    suffix: "%"
+    help: 亏到这个比例立刻平仓。按价格算，不是按保证金算。
+    group: 出场
+
   - key: arm_pct
-    label: 止盈：浮盈先摸到（%）
+    label: 止盈启动
     type: float
     default: 4
     min: 0.5
     max: 100
-    help: 浮盈第一次达到这个比例后才开始跟踪回撤（原规则"摸 +4%"）。
+    suffix: "%"
+    help: 浮盈第一次达到这个比例后，才开始跟踪回撤。
     group: 出场
 
   - key: trail_pct
-    label: 止盈：从最高点回撤（%）
+    label: 回撤止盈
     type: float
     default: 3
     min: 0.3
     max: 50
-    help: 摸到上面的浮盈后，价格从持仓期间最高点回撤这么多就平仓（原规则"回撤 3%"）。
+    suffix: "%"
+    help: 止盈启动后，价格从持仓期间最高点回撤这么多就平仓。
     group: 出场
 
   - key: confirm_ticks
-    label: 止盈确认次数
+    label: 回撤确认
     type: int
     default: 1
     min: 1
     max: 10
-    help: 回撤条件连续满足几次（每次约 1 秒）才平仓，防插针（原规则"1 次确认"）。
-    group: 出场
-
-  - key: stop_pct
-    label: 止损（%）
-    type: float
-    default: 4
-    min: 0.5
-    max: 50
-    help: 亏损达到这个比例立刻平仓（原规则 -4%）。合约按价格算，不是按保证金算。
+    suffix: 次
+    help: 回撤条件连续满足几次（约每秒一次）才平仓，防插针。
     group: 出场
 
   - key: max_hold_hours
-    label: 到期平仓（小时）
+    label: 最长持仓
     type: float
     default: 48
     min: 1
     max: 720
+    suffix: 小时
+    help: 拿满这么久还没出场就平仓。
     group: 出场
 
   - key: cooldown_hours
-    label: 冷却（小时）
+    label: 同币冷却
     type: float
     default: 3
     min: 0
     max: 168
-    help: 同一个币平仓后多久内不再买它。
+    suffix: 小时
+    help: 同一个币平仓后，多久内不再买它。
     group: 出场
 
+  # ---- 其他 ----
   - key: scan_seconds
-    label: 扫描间隔（秒）
+    label: 扫描间隔
     type: int
     default: 30
     min: 10
     max: 600
-    help: 多久扫一次全市场。持仓的止盈止损是每秒检查，不受这个影响。
+    suffix: 秒
+    help: 多久扫一次全市场。持仓的止盈止损每秒检查，不受影响。
     group: 其他
 
 runtime:

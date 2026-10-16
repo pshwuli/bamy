@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import type { SchemaField } from '@/api/types'
 import { DEFAULT_GROUP, isSecret, isVisible, validateField, outputValues, type ValidateMsgs } from '@/utils/schema'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const props = withDefaults(
   defineProps<{
@@ -19,6 +20,8 @@ const props = withDefaults(
 )
 const model = defineModel<Record<string, unknown>>({ required: true })
 const { t } = useI18n()
+// 手机：标签放上面、说明直接写在输入框下方（悬浮提示在手机上点不出来，长标签挤成竖排就乱了）
+const { isMobile } = useBreakpoint()
 
 const errors = reactive<Record<string, string>>({})
 const touched = reactive<Record<string, boolean>>({})
@@ -122,7 +125,7 @@ defineExpose({ validate, values })
 </script>
 
 <template>
-  <el-form :label-width="labelWidth" label-position="right" :disabled="disabled" class="schema-form" @submit.prevent>
+  <el-form :label-width="isMobile ? 'auto' : labelWidth" :label-position="isMobile ? 'top' : 'right'" :disabled="disabled" class="schema-form" :class="{ 'is-mobile': isMobile }" @submit.prevent>
     <el-empty v-if="!schema.length" :description="t('schema.noFields')" :image-size="48" />
     <el-collapse v-else v-model="openGroups">
       <el-collapse-item v-for="g in groups" :key="g.name" :name="g.name" :title="g.name === DEFAULT_GROUP ? t('schema.general') : g.name">
@@ -131,7 +134,7 @@ defineExpose({ validate, values })
             <template #label>
               <span class="sf-label">
                 {{ f.label || f.key }}
-                <el-tooltip v-if="f.help" :content="f.help" placement="top">
+                <el-tooltip v-if="f.help && !isMobile" :content="f.help" placement="top">
                   <el-icon class="sf-help" :aria-label="f.help"><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -276,6 +279,7 @@ defineExpose({ validate, values })
             </el-input>
 
             <span v-if="f.suffix && f.type !== 'string' && f.type !== 'secret'" class="sf-suffix">{{ f.suffix }}</span>
+            <div v-if="f.help && isMobile" class="sf-help-text">{{ f.help }}</div>
           </el-form-item>
         </template>
       </el-collapse-item>
@@ -284,7 +288,12 @@ defineExpose({ validate, values })
 </template>
 
 <style scoped>
-.sf-label { display: inline-flex; align-items: center; gap: 4px; }
+.sf-label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.sf-help-text { width: 100%; margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--el-text-color-secondary); }
+.schema-form :deep(.el-form-item__content) { flex-wrap: wrap; align-items: center; }
+.schema-form.is-mobile :deep(.el-form-item__label) { margin-bottom: 4px; line-height: 1.4; height: auto; }
+.schema-form.is-mobile .sf-num { width: calc(100% - 64px); }
+.schema-form.is-mobile .sf-wide { max-width: none; }
 .sf-help { color: var(--el-text-color-secondary); cursor: help; }
 .sf-num { width: 200px; }
 .sf-wide { width: 100%; max-width: 420px; }
@@ -292,5 +301,4 @@ defineExpose({ validate, values })
 .sf-unit { width: 90px; }
 .sf-suffix { margin-left: 8px; color: var(--el-text-color-secondary); }
 .schema-form :deep(.el-collapse-item__header) { font-weight: 600; }
-@media (max-width: 767px) { .sf-num { width: 100%; } }
 </style>

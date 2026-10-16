@@ -27,7 +27,7 @@ dist/
 coverage/
 
 # 运行时数据
-data/
+/data/
 logs/
 *.log
 *.db

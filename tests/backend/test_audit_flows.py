@@ -248,3 +248,24 @@ async def test_id_filters_are_ints(client, user_h):
     await query_audit(FakeDB(), {"target_id": "3"}, 1, 10)
     params = captured["sql"].compile(dialect=postgresql.dialect()).params
     assert 3 in params.values() and "3" not in params.values(), params
+
+
+# 系统更新：只有超级管理员能用；请求只写 check/apply 到共享目录，不在应用里执行任何命令
+async def test_system_update_request(client, admin_h, user_h, tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("UPDATE_DIR", str(tmp_path))
+    assert (await client.get("/api/super/update", headers=user_h)).status_code == 403
+    d = body(await client.get("/api/super/update", headers=admin_h))["data"]
+    assert d["installed"] is False and d["state"] == "unknown"
+    r = await client.post("/api/super/update", headers=admin_h, json={"action": "rm -rf /"})
+    assert body(r)["code"] == 40003
+    r = await client.post("/api/super/update", headers=admin_h, json={"action": "apply"})
+    assert body(r)["code"] == 0 and (tmp_path / "request").read_text() == "apply"
+    (tmp_path / "request").unlink()
+    (tmp_path / "status.json").write_text(_json.dumps({"state": "running", "message": "构建前端", "updater": True}))
+    r = await client.post("/api/super/update", headers=admin_h, json={"action": "check"})
+    assert body(r)["code"] == 40902
+    (tmp_path / "update.log").write_text("a\nb\n")
+    d = body(await client.get("/api/super/update", headers=admin_h))["data"]
+    assert d["installed"] and d["log"] == ["a", "b"]
