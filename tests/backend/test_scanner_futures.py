@@ -140,6 +140,12 @@ async def test_scanner_futures_short_shows_liq(client, user_h):
             await asyncio.sleep(0.05)
         assert pos and pos[0]["side"] == "short" and pos[0]["leverage"] == 2, pos
         assert pos[0]["liquidation_price"] > pos[0]["entry_price"]
+        # 模拟账户先有仓位，策略记账稍后；等策略视角也看到再平
+        for _ in range(100):
+            sp = body(await client.get(f"/api/instances/{iid}/positions", headers=user_h))["data"]["positions"]
+            if sp:
+                break
+            await asyncio.sleep(0.05)
         # 手动平仓：走策略的平仓（买入平空）
         r = await client.post(f"/api/instances/{iid}/positions/PUMP%2FUSDT%3AUSDT/close", headers=user_h, json={})
         assert body(r)["code"] == 0, r.text

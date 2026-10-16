@@ -215,3 +215,36 @@ async def test_live_instance_blocked_when_disabled(client, user_h):
         "params": {"quote_amount": 10, "interval": 3600}})
     assert body(r)["code"] == 42232 and "ENABLE_LIVE_TRADING" in body(r)["message"]
     assert body(await client.get("/api/setup/status"))["data"]["live_trading"] is False
+
+
+# 审计/订单按 id 过滤：查询串是字符串，必须转成整数（PostgreSQL 下 bigint = varchar 会报数据库错误）
+async def test_id_filters_are_ints(client, user_h):
+    from bamy.services.audit import query_audit
+
+    for path in ("/api/user/audit-logs?target_type=account&target_id=3", "/api/user/audit-logs?actor_id=1",
+                 "/api/orders?instance_id=1", "/api/orders?account_id=3"):
+        r = await client.get(path, headers=user_h)
+        assert body(r)["code"] == 0, (path, r.text)
+    r = await client.get("/api/user/audit-logs?target_id=abc", headers=user_h)
+    assert body(r)["code"] == 40002
+    from sqlalchemy.dialects import postgresql
+
+    captured = {}
+
+    class FakeDB:
+        async def scalar(self, stmt):
+            captured["sql"] = stmt
+            return 0
+
+        async def execute(self, stmt):
+            class R:
+                def scalars(self):
+                    return self
+
+                def all(self):
+                    return []
+            return R()
+
+    await query_audit(FakeDB(), {"target_id": "3"}, 1, 10)
+    params = captured["sql"].compile(dialect=postgresql.dialect()).params
+    assert 3 in params.values() and "3" not in params.values(), params

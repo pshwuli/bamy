@@ -29,7 +29,7 @@ from bamy.extensions.registry import registry
 from bamy.extensions.schema import (SchemaError, encrypt_secrets, mask_secrets, merge_secrets, secret_keys,
                                     validate)
 from bamy.services import system_config
-from bamy.services.audit import audit_dict, query_audit, system_log_dict, write_audit
+from bamy.services.audit import audit_dict, int_filter, query_audit, system_log_dict, write_audit
 
 router = APIRouter()
 
@@ -685,7 +685,7 @@ def _order_stmt(ctx: Ctx, f: dict[str, Any], owner_filter: bool = True):
     for key, col in (("instance_id", Order.instance_id), ("account_id", Order.account_id), ("symbol", Order.symbol),
                      ("status", Order.status), ("source", Order.source), ("side", Order.side)):
         if f.get(key) not in (None, ""):
-            stmt = stmt.where(col == f[key])
+            stmt = stmt.where(col == (int_filter(key, f[key]) if key.endswith("_id") else f[key]))
     if f.get("start_time"):
         stmt = stmt.where(Order.created_at >= _dt(f["start_time"]))
     if f.get("end_time"):

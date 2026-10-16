@@ -101,7 +101,10 @@ async def query_audit(db: AsyncSession, filters: dict[str, Any], page: int, page
                           ("target_id", AuditLog.target_id), ("action", AuditLog.action),
                           ("source", AuditLog.source), ("result", AuditLog.result)):
         if filters.get(field) not in (None, ""):
-            stmt = stmt.where(column == filters[field])
+            value = filters[field]
+            if field in {"actor_id", "target_id"}:
+                value = int_filter(field, value)   # 查询串是字符串；PostgreSQL 不允许 bigint = varchar
+            stmt = stmt.where(column == value)
     if filters.get("start_time"):
         stmt = stmt.where(AuditLog.timestamp >= _parse_dt(filters["start_time"]))
     if filters.get("end_time"):
@@ -110,6 +113,15 @@ async def query_audit(db: AsyncSession, filters: dict[str, Any], page: int, page
     rows = (await db.execute(stmt.order_by(AuditLog.timestamp.desc())
                              .offset((page - 1) * page_size).limit(page_size))).scalars().all()
     return list(rows), int(total)
+
+
+def int_filter(field: str, value: Any) -> int:
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        from bamy.core.errors import ApiError
+
+        raise ApiError(40002, f"{field} 必须是整数") from None
 
 
 def _parse_dt(value: str) -> datetime:
