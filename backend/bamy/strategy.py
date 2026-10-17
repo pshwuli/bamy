@@ -82,6 +82,14 @@ class StrategyContext:
     async def set_position_mode(self, mode: str) -> None:
         await self._engine.set_position_mode(self, mode)
 
+    async def normalize_amount(self, amount: float, symbol: str | None = None) -> float:
+        """把下单数量对齐到交易所的精度和最小步长，返回可直接下单的数量。
+
+        不按精度截断会被交易所按 LOT_SIZE 拒绝（-1111 Precision is over the maximum
+        defined），不同币种精度差别很大：BTC 是 1e-05、DOGE 是 1.0。
+        """
+        return await self._engine.normalize_amount(self, amount, symbol or self.symbol)
+
     # ---- 行情 ----
     def get_ticker(self, symbol: str | None = None) -> dict[str, Any] | None:
         return self._engine.get_ticker(symbol or self.symbol)

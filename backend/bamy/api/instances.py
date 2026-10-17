@@ -19,7 +19,7 @@ from bamy.core.config import settings
 from bamy.core.errors import ApiError
 from bamy.core.response import csv_safe, ok, paginated
 from bamy.db.models import (
-    Account, Instance, Order, PaperAccount, PaperSnapshot, PositionSnapshot,
+    Account, Instance, InstanceState, Order, PaperAccount, PaperSnapshot, PositionSnapshot,
     ReconcileDiff, ShareToken, SystemLog,
 )
 from bamy.engine.market import market, scan_symbol
@@ -563,6 +563,9 @@ async def delete_instance(instance_id: int, ctx: Ctx = Depends(current)):
     await ctx.db.execute(delete(PaperSnapshot).where(PaperSnapshot.instance_id == inst.id))
     # 删除对账差异记录
     await ctx.db.execute(delete(ReconcileDiff).where(ReconcileDiff.instance_id == inst.id))
+    # 删除策略状态（ms.pos / ms.cool / ui.status 等）——不清理会永久残留，
+    # 若实例 id 被复用或将来支持恢复实例，会读到不存在的虚拟持仓
+    await ctx.db.execute(delete(InstanceState).where(InstanceState.instance_id == inst.id))
 
 
     await ctx.db.commit()

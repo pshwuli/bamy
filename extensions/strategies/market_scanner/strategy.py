@@ -145,18 +145,26 @@ class MarketScannerStrategy(BaseStrategy):
         stats = {k: v for k, v in self.stats.items() if k not in self.pos and self.cool.get(k, 0) <= now}
         hits, near = pick(stats, p, self.sides)
         opened = False
+        tried = 0
+        fail_reason = ""
         for sym, side, chg, dist in hits:
             if len(self.pos) >= slots:
                 break
             what = "距高" if side == "long" else "距低"
             self.ctx.log_info(f"{head} | 命中 {sym} {self.window}{chg:+.1f}% {what}{dist:+.1f}%，开{SIDE_TXT[side]}")
+            tried += 1
             if await self._open(sym, side, float(stats[sym]["last"])):
                 opened = True
+            elif not fail_reason:
+                fail_reason = sym
         if opened:
             self.last_log = now
             await self._status(f"{head} | 持有 {'、'.join(self.pos)}", log=False)
             return
-        if near is not None:
+        if tried > 0 and not opened:
+            # 命中过但全部开仓失败：不能让状态显示成「无满足标的」，否则用户以为市场没机会
+            msg = f"{head} | 命中 {tried} 个但全部开仓失败（如 {fail_reason}），详见日志"
+        elif near is not None:
             sym, side, chg, dist, gap = near
             what = "距高" if side == "long" else "距低"
             msg = f"{head} | 空槽等待：无满足标的 | 离门槛最近 {sym} {self.window}{chg:+.1f}% {what}{dist:+.1f}%（还差 {gap:.1f}pp）"
@@ -182,36 +190,43 @@ class MarketScannerStrategy(BaseStrategy):
 
     # ------------------------------------------------------------------ 开平仓
     async def _equity_and_free(self) -> tuple[float, float]:
-        """
-        返回 (实例级权益, 账号可用余额)
-        - equity: 本实例的初始资金 + 本实例的浮动盈亏
-        - free: 账号级可用余额（用于校验是否足够下单）
+        """返回 (实例级权益, 账号可用余额)。
+
+        equity 的取法按运行模式分两种，不能混用：
+        - 模拟盘：fetch_balance() 返回的就是本实例的模拟账户，total 即实例权益。
+        - 实盘：fetch_balance() 返回的是**整个账号**的余额，多实例共享同一个账号时
+          拿它当 equity 会互相超配；改用实例自己的 live_capital + 本实例浮盈。
+
+        free 无论哪种模式都取账号可用余额，用来校验是否真的下得出来。
         """
         bal = await self.ctx.fetch_balance()
         usdt = bal.get("USDT") or {}
         account_free = float(usdt.get("free") or 0)
 
-        # 获取实例初始资金
-        from bamy.services.live_equity import live_capital
-        from bamy.db.session import session_scope
-        from bamy.db.models import Instance
-        async with session_scope() as db:
-            inst = await db.get(Instance, self.ctx.instance_id)
-            initial = live_capital(inst) if inst else 0.0
+        if self.ctx.paper:
+            # 模拟盘账户就是实例自己的，total 直接可用
+            instance_equity = float(usdt.get("total") or account_free)
+        else:
+            from bamy.services.live_equity import live_capital
+            from bamy.db.models import Instance
+            from bamy.db.session import session_scope
 
-        # 计算本实例的浮动盈亏
-        unrealized = 0.0
-        for sym, pos in self.pos.items():
-            t = self.ctx.get_ticker(sym) or {}
-            px = float(t.get("price") or pos["entry"])
-            if self.futures:
-                unrealized += (px - pos["entry"]) * pos["amount"] * (1 if pos["side"] == "long" else -1)
+            async with session_scope() as db:
+                inst = await db.get(Instance, self.ctx.instance_id)
+                initial = live_capital(inst) if inst else None
+            if not initial:
+                # 没设本金：退回账号总额，避免 equity=0 让实例完全无法开仓
+                instance_equity = float(usdt.get("total") or account_free)
             else:
-                # 现货持仓价值 - 初始成本
-                unrealized += (px - pos["entry"]) * pos["amount"]
-
-        # 实例级权益 = 初始资金 + 浮动盈亏
-        instance_equity = initial + unrealized if initial else 0.0
+                unrealized = 0.0
+                for sym, pos in self.pos.items():
+                    t = self.ctx.get_ticker(sym) or {}
+                    px = float(t.get("price") or pos["entry"])
+                    if self.futures:
+                        unrealized += (px - pos["entry"]) * pos["amount"] * (1 if pos["side"] == "long" else -1)
+                    else:
+                        unrealized += (px - pos["entry"]) * pos["amount"]
+                instance_equity = initial + unrealized
 
         return instance_equity, account_free
 
@@ -220,7 +235,9 @@ class MarketScannerStrategy(BaseStrategy):
         quote = min(equity * float(self.p["position_pct"]) / 100, free * 0.98)
         notional = quote * self.lev
         if notional < MIN_NOTIONAL:
-            self.ctx.log_warn(f"想开 {sym}，但可用资金 {free:.2f} USDT 不够最小下单额，跳过")
+            self.ctx.log_warn(f"想开 {sym}，但计算出的下单金额 {notional:.2f} USDT "
+                              f"低于最小下单额 {MIN_NOTIONAL:.0f}，跳过"
+                              f"（实例权益 {equity:.2f}，账号可用 {free:.2f}）")
             return False
         if self.futures and not self.ctx.paper:
             try:
@@ -230,7 +247,11 @@ class MarketScannerStrategy(BaseStrategy):
                 self.ctx.log_warn(f"{sym} 设置逐仓/杠杆失败：{exc}，跳过")
                 return False
         amount = notional / price
-        amount = float(f"{amount:.8g}")
+        # 按交易所 stepSize 对齐（不同币种精度差很大：BTC 1e-05、DOGE 1.0）
+        amount = await self.ctx.normalize_amount(amount, sym)
+        if amount <= 0:
+            self.ctx.log_warn(f"想开 {sym}，但按交易所精度对齐后数量为 0（低于最小下单量），跳过")
+            return False
         order = await (self.ctx.buy if side == "long" else self.ctx.sell)(amount, symbol=sym, reduce_only=False)
         if order.status in {"rejected", "failed"}:
             self.ctx.log_warn(f"{sym} 开{SIDE_TXT[side]}失败：{order.reason}")
@@ -281,13 +302,26 @@ class MarketScannerStrategy(BaseStrategy):
             bal = await self.ctx.fetch_balance()
             held = float((bal.get(_base(sym)) or {}).get("free") or 0)
             qty = min(qty, held) if held > 0 else qty
+        qty = await self.ctx.normalize_amount(qty, sym)
+        if qty <= 0:
+            # 数量对齐后为 0：持仓小于最小下单量，交易所平不掉，只能放弃跟踪
+            self.ctx.log_warn(f"{sym} {reason}，持仓量低于最小下单量，无法平仓，停止跟踪")
+            self._forget(sym)
+            await self._save()
+            return
         order = await (self.ctx.sell if pos["side"] == "long" else self.ctx.buy)(
-            float(f"{qty:.8g}"), symbol=sym, reduce_only=True)
+            qty, symbol=sym, reduce_only=True)
         if order.status in {"rejected", "failed"}:
-            self.ctx.log_warn(f"{sym} {reason}，平仓失败：{order.reason}")
-            if "持仓不足" in str(order.reason) or "42244" in str(order.reason) or "没有可平" in str(order.reason):
-                self._forget(sym)   # 仓位已经不在了（被强平或手动卖掉），不再反复尝试
-                await self._save()
+            msg = str(order.reason)
+            self.ctx.log_warn(f"{sym} {reason}，平仓失败：{msg}")
+            # 分三类处理，避免某种错误导致每 5 秒无限重试（触发交易所限频）
+            if any(k in msg for k in ("持仓不足", "42244", "没有可平", "position is zero")):
+                self._forget(sym)                       # 仓位已不在（强平/手动卖），不再跟踪
+            elif any(k in msg for k in ("-1021", "-1003", "429", "timeout", "Timeout", "Connection")):
+                self.cool[sym] = time.time() + 60        # 临时错误：退避 1 分钟
+            else:
+                self.cool[sym] = time.time() + 300       # 未知错误：退避 5 分钟，防止刷单
+            await self._save()
             return
         fill = float(order.filled_price or pos["entry"])
         pnl = (fill / pos["entry"] - 1) * 100 * (1 if pos["side"] == "long" else -1)
