@@ -136,10 +136,35 @@ class Scheduler:
         await engine.push("system.heartbeat", {"owner_id": None, "ts": now})
 
     async def retention(self) -> None:
+        """
+        数据保留策略：清理超过 30 天的日志、健康检查和快照数据。
+        """
         cutoff = datetime.utcnow() - timedelta(days=30)
         async with session_scope() as db:
+            # 原有的日志清理
             await db.execute(delete(SystemLog).where(SystemLog.timestamp < cutoff))
             await db.execute(delete(AccountHealth).where(AccountHealth.checked_at < cutoff))
+
+            # 补充快照清理
+            from backend.bamy.db.models import EquitySnapshot, PaperSnapshot
+            await db.execute(delete(EquitySnapshot).where(EquitySnapshot.created_at < cutoff))
+            await db.execute(delete(PaperSnapshot).where(PaperSnapshot.created_at < cutoff))
+
+            # 清理已解决的对账差异（超过 30 天）
+            from backend.bamy.db.models import ReconcileDiff
+            await db.execute(delete(ReconcileDiff).where(
+                ReconcileDiff.resolved == True,  # noqa: E712
+                ReconcileDiff.resolved_at < cutoff
+            ))
+
+            # 清理已关闭的熔断记录（超过 90 天）
+            from backend.bamy.db.models import CircuitBreaker
+            cb_cutoff = datetime.utcnow() - timedelta(days=90)
+            await db.execute(delete(CircuitBreaker).where(
+                CircuitBreaker.recovered_at.isnot(None),
+                CircuitBreaker.recovered_at < cb_cutoff
+            ))
+
             await db.commit()
 
     async def stop(self) -> None:

@@ -122,6 +122,90 @@ async def diff_resolve(diff_id: int, request: Request, ctx: Ctx = Depends(admin)
     return ok(_diff_out(d))
 
 
+@router.post("/api/admin/reconcile/diffs/{diff_id}/auto_fix")
+async def diff_auto_fix(diff_id: int, ctx: Ctx = Depends(admin)):
+    """
+    自动修正对账差异：根据交易所实际状态更新本地持仓记录。
+    仅支持持仓差异（position_short/position_extra/futures_*），不支持订单差异。
+    """
+    d = await ctx.db.get(ReconcileDiff, diff_id)
+    if d is None:
+        raise ApiError(40401)
+    if d.resolved:
+        raise ApiError(42248, "差异已标记为解决，不能重复修正")
+
+    import json
+    expected = json.loads(d.expected or "{}")
+    actual = json.loads(d.actual or "{}")
+
+    # 根据 diff_type 执行不同的修正逻辑
+    if d.diff_type.startswith("position_"):
+        # 现货持仓差异：更新实例的持仓快照
+        asset = actual.get("asset")
+        actual_amount = float(actual.get("amount", 0))
+        expected_amount = float(expected.get("amount", 0))
+
+        if not asset or d.instance_id is None:
+            raise ApiError(42249, "差异记录缺少必要字段（asset 或 instance_id）")
+
+        # 更新持仓快照（简化处理：直接调整最近的持仓记录）
+        from backend.bamy.db.models import Position
+        from sqlalchemy import select, desc
+        pos = (await ctx.db.execute(
+            select(Position)
+            .where(Position.instance_id == d.instance_id,
+                   Position.symbol.like(f"{asset}/%"))  # 匹配 BTC/USDT 等
+            .order_by(desc(Position.updated_at))
+            .limit(1)
+        )).scalar_one_or_none()
+
+        if pos:
+            # 调整持仓数量
+            adjustment = actual_amount - expected_amount
+            pos.amount = float(pos.amount) + adjustment
+            if abs(pos.amount) < 1e-8:
+                # 持仓归零，删除记录
+                await ctx.db.delete(pos)
+        elif actual_amount > 1e-8:
+            # 本地没有持仓但交易所有，创建新持仓（需要获取市价）
+            raise ApiError(42250, "无法自动创建新持仓，请手动处理")
+
+    elif d.diff_type.startswith("futures_"):
+        # 合约持仓差异
+        symbol = actual.get("symbol")
+        side = actual.get("side")
+        actual_amount = float(actual.get("amount", 0))
+
+        if not symbol or not side or d.instance_id is None:
+            raise ApiError(42249, "差异记录缺少必要字段")
+
+        from backend.bamy.db.models import Position
+        from sqlalchemy import select
+        pos = (await ctx.db.execute(
+            select(Position)
+            .where(Position.instance_id == d.instance_id,
+                   Position.symbol == symbol,
+                   Position.side == side)
+        )).scalar_one_or_none()
+
+        if pos:
+            pos.amount = actual_amount
+            if abs(pos.amount) < 1e-8:
+                await ctx.db.delete(pos)
+        elif actual_amount > 1e-8:
+            raise ApiError(42250, "无法自动创建新持仓，请手动处理")
+
+    else:
+        raise ApiError(42251, f"不支持的差异类型: {d.diff_type}")
+
+    # 标记为已解决
+    d.resolved, d.resolved_at = True, datetime.utcnow()
+    await ctx.db.commit()
+    await write_audit(ctx.db, action="reconcile.auto_fix", target_type="reconcile_diff", target_id=diff_id,
+                      old_value={"expected": expected}, new_value={"actual": actual}, **ctx.audit_kw())
+    return ok({"message": "已自动修正", "diff": _diff_out(d)})
+
+
 # ====================================================================== 第十二节 风控
 def _cb_out(cb: CircuitBreaker, names: dict[str, dict[int, str]] | None = None) -> dict[str, Any]:
     target = None

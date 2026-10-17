@@ -549,6 +549,27 @@ async def delete_instance(instance_id: int, ctx: Ctx = Depends(current)):
     inst.status, inst.deleted_at, inst.enabled = "deleted", datetime.utcnow(), False
     await ctx.db.execute(update(ShareToken).where(ShareToken.instance_id == inst.id, ShareToken.revoked_at.is_(None))
                          .values(revoked_at=datetime.utcnow()))
+
+    # 级联清理关联数据（2217 行残留）
+    from backend.bamy.db.models import (Order, Position, Trade, PaperAccount, PaperSnapshot,
+                                         EquitySnapshot, ReconcileDiff, Signal)
+    # 删除订单（保留已成交的订单作为历史记录，只删除未完成的）
+    await ctx.db.execute(delete(Order).where(Order.instance_id == inst.id,
+                                             Order.status.in_(("submitted", "partial", "cancelled", "unknown"))))
+    # 删除持仓快照
+    await ctx.db.execute(delete(Position).where(Position.instance_id == inst.id))
+    # 保留成交记录（Trade）作为审计日志，不删除
+    # 删除模拟盘账户
+    await ctx.db.execute(delete(PaperAccount).where(PaperAccount.instance_id == inst.id))
+    # 删除模拟盘快照
+    await ctx.db.execute(delete(PaperSnapshot).where(PaperSnapshot.instance_id == inst.id))
+    # 删除权益快照
+    await ctx.db.execute(delete(EquitySnapshot).where(EquitySnapshot.instance_id == inst.id))
+    # 删除对账差异记录
+    await ctx.db.execute(delete(ReconcileDiff).where(ReconcileDiff.instance_id == inst.id))
+    # 删除信号记录
+    await ctx.db.execute(delete(Signal).where(Signal.instance_id == inst.id))
+
     await ctx.db.commit()
     engine._books.pop(inst.id, None)
     await write_audit(ctx.db, action="instance.delete", target_type="instance", target_id=inst.id, **ctx.audit_kw())

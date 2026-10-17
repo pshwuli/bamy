@@ -1390,21 +1390,92 @@ class Engine:
         async with session_scope() as db:
             insts = (await db.execute(select(Instance).where(Instance.account_id == account_id,
                                                              Instance.deleted_at.is_(None)))).scalars().all()
+
+        # 现货持仓对账
         expected: dict[str, float] = {}
         for inst in insts:
             if inst.market_type == "futures":
-                continue   # 合约持仓不在现货余额里，按仓位接口对账（见 BinanceFuturesAdapter.fetch_positions）
+                continue
             for pos in await self.framework_positions(inst.id):
                 base = pos["symbol"].split("/")[0]
                 expected[base] = expected.get(base, 0.0) + float(pos["amount"])
+
+        # 合约持仓对账
+        futures_expected: dict[str, dict] = {}  # {symbol: {"amount": float, "side": str}}
+        for inst in insts:
+            if inst.market_type != "futures":
+                continue
+            for pos in await self.framework_positions(inst.id):
+                sym = pos["symbol"]
+                amount = float(pos["amount"])
+                side = pos.get("side", "long")
+                if sym not in futures_expected:
+                    futures_expected[sym] = {"long": 0.0, "short": 0.0}
+                futures_expected[sym][side] += amount
+
+        # 获取交易所合约持仓
+        futures_actual: dict[str, dict] = {}
+        if futures_expected:
+            try:
+                async with session_scope() as db:
+                    acc = await db.get(Account, account_id)
+                    client = await pool.get(acc)
+                positions = await client.fetch_positions()
+                for p in positions:
+                    sym = p.get("symbol")
+                    contracts = float(p.get("contracts") or 0)
+                    side = p.get("side", "long")
+                    if abs(contracts) > 1e-8:
+                        if sym not in futures_actual:
+                            futures_actual[sym] = {"long": 0.0, "short": 0.0}
+                        futures_actual[sym][side] = contracts
+            except Exception as exc:  # noqa: BLE001
+                await self.push("reconcile.error", {"account_id": account_id, "error": f"获取合约持仓失败: {exc}"})
+
         async with session_scope() as db:
             for base, qty in expected.items():
                 actual = float(balances.get(base, 0.0))
-                if actual + 1e-8 < qty:
+                # 双向检测：交易所少于本地 或 交易所多于本地
+                if abs(actual - qty) > 1e-8:  # 超出容差即记录
+                    if actual < qty:
+                        diff_type = "position_short"  # 交易所少于本地
+                    else:
+                        diff_type = "position_extra"  # 交易所多于本地
                     diffs += 1
-                    db.add(ReconcileDiff(account_id=account_id, diff_type="position",
+                    db.add(ReconcileDiff(account_id=account_id, diff_type=diff_type,
                                          expected=json.dumps({"asset": base, "amount": qty}),
                                          actual=json.dumps({"asset": base, "amount": actual})))
+            # 检查交易所有但本地没有的币（完全新增的持仓）
+            for base, actual_qty in balances.items():
+                if base not in expected and float(actual_qty) > 1e-8:
+                    diffs += 1
+                    db.add(ReconcileDiff(account_id=account_id, diff_type="position_extra",
+                                         expected=json.dumps({"asset": base, "amount": 0.0}),
+                                         actual=json.dumps({"asset": base, "amount": float(actual_qty)})))
+
+            # 对账合约持仓
+            for sym, exp_sides in futures_expected.items():
+                act_sides = futures_actual.get(sym, {"long": 0.0, "short": 0.0})
+                for side in ["long", "short"]:
+                    exp_amt = exp_sides[side]
+                    act_amt = act_sides[side]
+                    if abs(exp_amt - act_amt) > 1e-8:
+                        diff_type = f"futures_{side}_short" if act_amt < exp_amt else f"futures_{side}_extra"
+                        diffs += 1
+                        db.add(ReconcileDiff(account_id=account_id, diff_type=diff_type,
+                                             expected=json.dumps({"symbol": sym, "side": side, "amount": exp_amt}),
+                                             actual=json.dumps({"symbol": sym, "side": side, "amount": act_amt})))
+
+            # 检查交易所有但本地没有的合约持仓
+            for sym, act_sides in futures_actual.items():
+                if sym not in futures_expected:
+                    for side, act_amt in act_sides.items():
+                        if abs(act_amt) > 1e-8:
+                            diffs += 1
+                            db.add(ReconcileDiff(account_id=account_id, diff_type=f"futures_{side}_extra",
+                                                 expected=json.dumps({"symbol": sym, "side": side, "amount": 0.0}),
+                                                 actual=json.dumps({"symbol": sym, "side": side, "amount": act_amt})))
+
             await db.commit()
         if diffs:
             await self.push("reconcile.diff", {"account_id": account_id, "owner_id": account.owner_id, "count": diffs})
@@ -1515,6 +1586,24 @@ class Engine:
         if breach is not None:
             await self.push("risk.breached", {"instance_id": run.instance_id, "owner_id": run.owner_id,
                                               "rule": breach.rule, "message": str(breach)})
+            # 自动记录熔断事件
+            async with session_scope() as db:
+                from bamy.db.models import CircuitBreaker
+                # 检查是否已有未恢复的熔断记录（避免重复）
+                existing = (await db.execute(select(CircuitBreaker).where(
+                    CircuitBreaker.level == "user",
+                    CircuitBreaker.target_id == run.owner_id,
+                    CircuitBreaker.recovered_at.is_(None)
+                ))).scalar_one_or_none()
+                if not existing:
+                    db.add(CircuitBreaker(
+                        level="user",
+                        target_id=run.owner_id,
+                        reason=f"自动风控触发：{breach.rule} - {str(breach)}",
+                        triggered_by=f"instance_{run.instance_id}",
+                        created_at=datetime.utcnow()
+                    ))
+                    await db.commit()
             await self.auto_stop(run.instance_id, str(breach))
         return 1
 

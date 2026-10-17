@@ -182,18 +182,38 @@ class MarketScannerStrategy(BaseStrategy):
 
     # ------------------------------------------------------------------ 开平仓
     async def _equity_and_free(self) -> tuple[float, float]:
+        """
+        返回 (实例级权益, 账号可用余额)
+        - equity: 本实例的初始资金 + 本实例的浮动盈亏
+        - free: 账号级可用余额（用于校验是否足够下单）
+        """
         bal = await self.ctx.fetch_balance()
         usdt = bal.get("USDT") or {}
-        free = float(usdt.get("free") or 0)
-        equity = float(usdt.get("total") or free)
+        account_free = float(usdt.get("free") or 0)
+
+        # 获取实例初始资金
+        from backend.bamy.services.live_equity import live_capital
+        from backend.bamy.db import session_scope
+        from backend.bamy.models import Instance
+        async with session_scope() as db:
+            inst = await db.get(Instance, self.ctx.instance_id)
+            initial = live_capital(inst) if inst else 0.0
+
+        # 计算本实例的浮动盈亏
+        unrealized = 0.0
         for sym, pos in self.pos.items():
             t = self.ctx.get_ticker(sym) or {}
             px = float(t.get("price") or pos["entry"])
             if self.futures:
-                equity += (px - pos["entry"]) * pos["amount"] * (1 if pos["side"] == "long" else -1)
+                unrealized += (px - pos["entry"]) * pos["amount"] * (1 if pos["side"] == "long" else -1)
             else:
-                equity += px * pos["amount"]
-        return equity, free
+                # 现货持仓价值 - 初始成本
+                unrealized += (px - pos["entry"]) * pos["amount"]
+
+        # 实例级权益 = 初始资金 + 浮动盈亏
+        instance_equity = initial + unrealized if initial else 0.0
+
+        return instance_equity, account_free
 
     async def _open(self, sym: str, side: str, price: float) -> bool:
         equity, free = await self._equity_and_free()
