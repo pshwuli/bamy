@@ -19,7 +19,8 @@ from bamy.core.config import settings
 from bamy.core.errors import ApiError
 from bamy.core.response import csv_safe, ok, paginated
 from bamy.db.models import (
-    Account, Instance, Order, PaperAccount, PaperSnapshot, PositionSnapshot, ShareToken, SystemLog,
+    Account, EquitySnapshot, Instance, Order, PaperAccount, PaperSnapshot, Position,
+    PositionSnapshot, ReconcileDiff, ShareToken, Signal, SystemLog, Trade,
 )
 from bamy.engine.market import market, scan_symbol
 from bamy.engine.pluginhub import plugin_hub
@@ -551,8 +552,6 @@ async def delete_instance(instance_id: int, ctx: Ctx = Depends(current)):
                          .values(revoked_at=datetime.utcnow()))
 
     # 级联清理关联数据（2217 行残留）
-    from backend.bamy.db.models import (Order, Position, Trade, PaperAccount, PaperSnapshot,
-                                         EquitySnapshot, ReconcileDiff, Signal)
     # 删除订单（保留已成交的订单作为历史记录，只删除未完成的）
     await ctx.db.execute(delete(Order).where(Order.instance_id == inst.id,
                                              Order.status.in_(("submitted", "partial", "cancelled", "unknown"))))

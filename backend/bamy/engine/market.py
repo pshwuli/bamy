@@ -222,8 +222,15 @@ class MarketHub:
                 except Exception:  # noqa: BLE001
                     continue
             ids = list(by_id)
+
+            # 过滤非法字符（币安 /api/v3/ticker 的 symbols 参数不支持中文等字符）
+            def _legal(sid: str) -> bool:
+                return all(c.isupper() or c.isdigit() or c in "-._" for c in sid)
+
             for i in range(0, len(ids), 100):
-                chunk = ids[i:i + 100]
+                chunk = [x for x in ids[i:i + 100] if _legal(x)]
+                if not chunk:
+                    continue
                 rows = await rest.public_get_ticker({"symbols": json.dumps(chunk, separators=(",", ":")),
                                                      "windowSize": window})
                 for r in rows:
