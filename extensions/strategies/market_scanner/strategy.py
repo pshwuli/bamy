@@ -204,8 +204,16 @@ class MarketScannerStrategy(BaseStrategy):
         account_free = float(usdt.get("free") or 0)
 
         if self.ctx.paper:
-            # 模拟盘账户就是实例自己的，total 直接可用
+            # 模拟盘账户就是实例自己的。现货的 USDT.total 只有现金，合约的是现金+保证金，
+            # 都不含持仓盈亏；不补上的话，开一单后权益就缩水，后面的仓位越开越小
             instance_equity = float(usdt.get("total") or account_free)
+            for sym, pos in self.pos.items():
+                t = self.ctx.get_ticker(sym) or {}
+                px = float(t.get("price") or pos["entry"])
+                if self.futures:
+                    instance_equity += (px - pos["entry"]) * pos["amount"] * (1 if pos["side"] == "long" else -1)
+                else:
+                    instance_equity += px * pos["amount"]
         else:
             from bamy.services.live_equity import live_capital
             from bamy.db.models import Instance
@@ -272,6 +280,8 @@ class MarketScannerStrategy(BaseStrategy):
         pos = self.pos.get(sym)
         if pos is None or px <= 0:
             return
+        if self.cool.get(sym, 0) > time.time():
+            return   # 上次平仓失败后在退避期内，不要每秒重试（会触发限频）；退避期间止损也暂停
         p = self.p
         long_ = pos["side"] == "long"
         pnl = (px / pos["entry"] - 1) * 100 * (1 if long_ else -1)
