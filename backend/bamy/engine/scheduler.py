@@ -145,9 +145,8 @@ class Scheduler:
             await db.execute(delete(SystemLog).where(SystemLog.timestamp < cutoff))
             await db.execute(delete(AccountHealth).where(AccountHealth.checked_at < cutoff))
 
-            # 补充快照清理
-            from backend.bamy.db.models import EquitySnapshot, PaperSnapshot
-            await db.execute(delete(EquitySnapshot).where(EquitySnapshot.created_at < cutoff))
+            # 补充快照清理（PaperSnapshot）
+            from backend.bamy.db.models import PaperSnapshot
             await db.execute(delete(PaperSnapshot).where(PaperSnapshot.created_at < cutoff))
 
             # 清理已解决的对账差异（超过 30 天）
