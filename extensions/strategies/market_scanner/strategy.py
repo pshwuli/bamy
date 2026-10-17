@@ -192,9 +192,9 @@ class MarketScannerStrategy(BaseStrategy):
         account_free = float(usdt.get("free") or 0)
 
         # 获取实例初始资金
-        from backend.bamy.services.live_equity import live_capital
-        from backend.bamy.db import session_scope
-        from backend.bamy.models import Instance
+        from bamy.services.live_equity import live_capital
+        from bamy.db.session import session_scope
+        from bamy.db.models import Instance
         async with session_scope() as db:
             inst = await db.get(Instance, self.ctx.instance_id)
             initial = live_capital(inst) if inst else 0.0
