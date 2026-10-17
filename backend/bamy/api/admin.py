@@ -432,14 +432,24 @@ async def view(token: str, request: Request, db=Depends(get_session)):
     ext = registry.get_strategy(inst.strategy_id)
     data: dict[str, Any] = {"instance_name": inst.name, "strategy_name": ext.meta.get("name") if ext else inst.strategy_id,
                             "symbol": inst.symbol, "paper": inst.paper, "status": inst.status, "readonly": True}
-    if s.show_equity and inst.paper:
+    if s.show_equity:
         snaps = (await db.execute(select(PaperSnapshot).where(PaperSnapshot.instance_id == inst.id)
                                   .order_by(PaperSnapshot.snapshot_at))).scalars().all()
-        initial = float(inst.paper_balance or 0)
-        book = await engine._get_book(inst.id)
-        equity = float(book.equity(await engine._prices(book)))
-        data |= {"equity": equity, "return_rate": round((equity - initial) / initial, 6) if initial else None,
-                 "equity_curve": [{"t": iso(x.snapshot_at), "v": float(x.equity)} for x in snaps[-500:]]}
+        if inst.paper:
+            initial = float(inst.paper_balance or 0)
+            book = await engine._get_book(inst.id)
+            equity = float(book.equity(await engine._prices(book)))
+            data |= {"equity": equity, "return_rate": round((equity - initial) / initial, 6) if initial else None,
+                     "equity_curve": [{"t": iso(x.snapshot_at), "v": float(x.equity)} for x in snaps[-500:]]}
+        else:
+            # 实盘：取最新快照的权益和收益率
+            if snaps:
+                latest = snaps[-1]
+                equity = float(latest.equity)
+                initial = float(latest.balance) - float(latest.realized_pnl or 0) if latest.balance and latest.realized_pnl else None
+                data |= {"equity": equity,
+                         "return_rate": round((equity - initial) / initial, 6) if initial and initial > 0 else None,
+                         "equity_curve": [{"t": iso(x.snapshot_at), "v": float(x.equity)} for x in snaps[-500:]]}
     if s.show_positions:
         data["positions"] = _jsonable(await engine.framework_positions(inst.id))
     if s.show_orders:
