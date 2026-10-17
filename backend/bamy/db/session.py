@@ -23,7 +23,16 @@ if not settings.database_url.startswith("sqlite"):
         "pool_pre_ping": True,
     }
 else:
-    Path("./data").mkdir(exist_ok=True)
+    # 从 DATABASE_URL 提取实际路径并创建目录
+    # sqlite+aiosqlite:///./data/bamy.db -> ./data/bamy.db
+    # sqlite+aiosqlite:////absolute/path/db.sqlite -> /absolute/path/db.sqlite
+    db_path_part = settings.database_url.split("://", 1)[1]
+    # 去掉开头的斜杠（相对路径是 /./data/bamy.db，绝对路径是 ////path/db）
+    if db_path_part.startswith("/"):
+        db_path_part = db_path_part.lstrip("/")
+    db_file = Path(db_path_part)
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+
     # 并发写（崩溃恢复并发启动、定时任务、接口请求）时等锁而不是立刻报 database is locked
     _kwargs["connect_args"] = {"timeout": 30}
 
