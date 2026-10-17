@@ -21,6 +21,7 @@ const accountTotal = ref(0)
 const instTotal = ref(0)
 const runningTotal = ref(0)
 const paperTotal = ref(0)
+const liveTotal = ref(0)
 const todayOrders = ref(0)
 const todayPnl = ref<number | null>(null)
 const instances = shallowRef<Instance[]>([])
@@ -28,6 +29,9 @@ const orders = shallowRef<Order[]>([])
 const accounts = shallowRef<Account[]>([])
 const health = ref<Record<number, AccountHealth | null>>({})
 const badBindings = shallowRef<Binding[]>([])
+const paperEquity = ref<number | null>(null)
+const liveEquity = ref<number | null>(null)
+const paperBase = ref<number | null>(null)
 
 function startOfToday() {
   const d = new Date()
@@ -41,12 +45,12 @@ async function load() {
     accountsApi.list({ page: 1, page_size: 5 }),
     instancesApi.list({ page: 1, page_size: 5 }),
     instancesApi.list({ page: 1, page_size: 1, status: 'running' }),
-    instancesApi.list({ page: 1, page_size: 100, paper: true }),
+    instancesApi.list({ page: 1, page_size: 100 }),  // 查询所有实例（包含模拟盘和实盘）
     ordersApi.list({ page: 1, page_size: 5 }),
     ordersApi.list({ page: 1, page_size: 1, start_time: today }),
     bindingsApi.list({ page: 1, page_size: 100 }),
   ])
-  const [acc, inst, run, paper, ord, ordToday, binds] = results
+  const [acc, inst, run, allInst, ord, ordToday, binds] = results
   if (acc.status === 'fulfilled') {
     accounts.value = acc.value.items
     accountTotal.value = acc.value.pagination?.total ?? acc.value.items.length
@@ -56,14 +60,25 @@ async function load() {
     instTotal.value = inst.value.pagination?.total ?? inst.value.items.length
   }
   if (run.status === 'fulfilled') runningTotal.value = run.value.pagination?.total ?? run.value.items.length
-  if (paper.status === 'fulfilled') {
-    paperTotal.value = paper.value.pagination?.total ?? paper.value.items.length
-    // 后端返回 initial_equity（模拟盘初始资金）；旧字段名 initial_balance 兼容
+  if (allInst.status === 'fulfilled') {
+    const paperInstances = allInst.value.items.filter((i) => i.paper)
+    const liveInstances = allInst.value.items.filter((i) => !i.paper)
+
+    paperTotal.value = paperInstances.length
+    liveTotal.value = liveInstances.length
+
+    // 模拟盘总资产
     const base = (i: Row) => i.initial_equity ?? i.initial_balance ?? i.paper_balance
-    const withBase = paper.value.items.filter((i) => i.equity != null && base(i) != null)
-    todayPnl.value = withBase.length ? withBase.reduce((s, i) => s + (Number(i.equity) - Number(base(i))), 0) : null
-    paperEquity.value = withBase.length ? withBase.reduce((s, i) => s + Number(i.equity), 0) : null
-    paperBase.value = withBase.length ? withBase.reduce((s, i) => s + Number(base(i)), 0) : null
+    const paperWithBase = paperInstances.filter((i) => i.equity != null && base(i) != null)
+    paperEquity.value = paperWithBase.length ? paperWithBase.reduce((s, i) => s + Number(i.equity), 0) : null
+    paperBase.value = paperWithBase.length ? paperWithBase.reduce((s, i) => s + Number(base(i)), 0) : null
+
+    // 实盘总资产
+    const liveWithEquity = liveInstances.filter((i) => i.equity != null)
+    liveEquity.value = liveWithEquity.length ? liveWithEquity.reduce((s, i) => s + Number(i.equity), 0) : null
+
+    // 总盈亏（仅模拟盘，实盘的初始资金不统一无法计算）
+    todayPnl.value = paperWithBase.length ? paperWithBase.reduce((s, i) => s + (Number(i.equity) - Number(base(i))), 0) : null
   }
   if (ord.status === 'fulfilled') orders.value = ord.value.items
   if (ordToday.status === 'fulfilled') todayOrders.value = ordToday.value.pagination?.total ?? ordToday.value.items.length
@@ -86,9 +101,12 @@ async function loadHealth() {
   health.value = out
 }
 
-const paperEquity = ref<number | null>(null)
-const paperBase = ref<number | null>(null)
 const pnlPct = computed(() => (todayPnl.value != null && paperBase.value ? (todayPnl.value / paperBase.value) * 100 : null))
+const totalEquity = computed(() => {
+  const paper = paperEquity.value ?? 0
+  const live = liveEquity.value ?? 0
+  return paper + live > 0 ? paper + live : null
+})
 const statusRank: Record<string, number> = { error: 0, running: 1, paused: 2, starting: 3, stopping: 4, created: 5, stopped: 6 }
 const sortedInstances = computed(() => [...instances.value].sort((a, b) => (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9)))
 
@@ -116,8 +134,13 @@ onBeforeUnmount(() => clearInterval(refresher))
     <!-- 第一屏：账户全貌。手机上一眼看完：资金、盈亏、在跑几个、有没有告警 -->
     <section class="summary" :class="{ loading }">
       <div class="sum-main">
-        <span class="sum-label">{{ t('dashx.paperEquity') }}</span>
-        <span class="sum-value num">{{ paperEquity == null ? '—' : fmtMoney(paperEquity) }}<small>USDT</small></span>
+        <span class="sum-label">{{ t('dashx.totalEquity') }}</span>
+        <span class="sum-value num">{{ totalEquity == null ? '—' : fmtMoney(totalEquity) }}<small>USDT</small></span>
+        <span v-if="paperEquity != null || liveEquity != null" class="sum-breakdown">
+          <template v-if="paperEquity != null">{{ t('dashx.paper') }} {{ fmtMoney(paperEquity) }}</template>
+          <template v-if="paperEquity != null && liveEquity != null"> + </template>
+          <template v-if="liveEquity != null">{{ t('dashx.live') }} {{ fmtMoney(liveEquity) }}</template>
+        </span>
         <span v-if="todayPnl != null" class="sum-pnl num" :class="pnlClass(todayPnl)">
           {{ todayPnl >= 0 ? '+' : '' }}{{ fmtMoney(todayPnl) }}
           <template v-if="pnlPct != null">（{{ pnlPct >= 0 ? '+' : '' }}{{ pnlPct.toFixed(2) }}%）</template>
@@ -237,6 +260,7 @@ onBeforeUnmount(() => clearInterval(refresher))
 .sum-label { font-size: 13px; color: var(--ink-3); }
 .sum-value { font-size: clamp(32px, 4vw, 48px); font-weight: 500; letter-spacing: -0.03em; line-height: 1.05; }
 .sum-value small { font-size: 0.36em; color: var(--ink-3); margin-left: 8px; letter-spacing: 0; font-family: var(--font-ui); }
+.sum-breakdown { font-size: 13px; color: var(--ink-3); }
 .sum-pnl { font-size: 15px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
 .sum-pnl .muted { font-size: 12px; font-family: var(--font-ui); }
 .sum-figs { display: grid; grid-template-columns: repeat(4, auto); gap: 6px; margin: 0; }

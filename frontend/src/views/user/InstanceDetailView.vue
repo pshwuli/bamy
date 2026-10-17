@@ -725,7 +725,7 @@ function onMore(cmd: string) {
 
             <el-card shadow="never" class="mb">
               <template #header>{{ t('instance.curve') }}</template>
-              <LineChart v-if="inst.paper && snapshots.length" :timeline="curve.timeline" :series="curve.series" :value-format="(v: number) => fmtMoney(v)" area :aria-label="t('instance.curve')" height="280px" />
+              <LineChart v-if="snapshots.length" :timeline="curve.timeline" :series="curve.series" :value-format="(v: number) => fmtMoney(v)" area :aria-label="t('instance.curve')" height="280px" />
               <el-empty v-else :description="inst.paper ? t('instx.noCurve') : t('instx.liveCurveNote')" :image-size="48" />
             </el-card>
 

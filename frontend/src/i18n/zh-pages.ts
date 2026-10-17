@@ -34,6 +34,16 @@ export default {
     viewAll: '查看全部',
     noAlerts: '暂无告警',
   },
+  dashx: {
+    totalEquity: '总资产',
+    paperEquity: '模拟盘总资产',
+    paper: '模拟盘',
+    live: '实盘',
+    sinceStart: '自初始资金',
+    noPaper: '暂无模拟盘',
+    emptyInstances: '还没有创建实例',
+    emptyAccounts: '还没有添加账号',
+  },
   account: {
     title: '我的账号',
     adminTitle: '所有账号',
