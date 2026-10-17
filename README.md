@@ -149,6 +149,8 @@ sudo bash scripts/install-updater.sh         # 可选：装上后台"系统更�
 
 装了更新服务后，用超级管理员登录后台 → 超级管理 → 系统更新 → 立即更新。它会先备份数据库，再拉取本仓库 main 分支的新代码、构建、重启；任何一步失败都会自动回滚。没装的话在服务器上执行 `scripts/update.sh apply`，效果一样。
 
+**注意**：如果通过 `git pull` 手工更新代码，更新完成后必须重启服务才能生效（`BAMY_MODE=docker scripts/start.sh` 或 `BAMY_MODE=native scripts/start.sh`）。推荐使用上述自动更新流程，它会自动处理重启。
+
 开发与测试：
 
 ```
