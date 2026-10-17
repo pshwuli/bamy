@@ -1,14 +1,18 @@
 """数据库会话与建表。"""
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bamy.core.config import settings
 from bamy.db.models import Base
+
+log = logging.getLogger("bamy.db")
 
 _kwargs: dict = {"echo": False, "future": True}
 if not settings.database_url.startswith("sqlite"):
@@ -39,9 +43,47 @@ if settings.database_url.startswith("sqlite"):
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+def _sync_missing_columns(sync_conn) -> list[str]:
+    """给已存在的表补齐 ORM 模型里新增、但库里还没有的列。
+
+    `Base.metadata.create_all` 只建新表，不会改已有表结构。新增字段后不补列，
+    查询会直接报 `no such column: xxx`（例如 accounts.position_mode）。
+
+    只做「加列」，不做改名/改类型/删列——那些需要人工迁移，避免误删数据。
+    新增列一律允许 NULL：历史行没有值，强制 NOT NULL 会加不上。
+    """
+    inspector = inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    dialect = sync_conn.dialect
+    added: list[str] = []
+
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all 已经建好了新表
+        have = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in have:
+                continue
+            try:
+                # column.type 是 TypeEngine 实例，传入方言实例即可编译成 DDL 片段
+                col_type = column.type.compile(dialect=dialect)
+            except Exception as exc:  # noqa: BLE001 - 推断失败就跳过，不阻塞启动
+                log.warning("无法推断字段类型，跳过 %s.%s：%s", table.name, column.name, exc)
+                continue
+            ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
+            sync_conn.execute(text(ddl))
+            added.append(f"{table.name}.{column.name}")
+
+    return added
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 兼容旧库：补齐模型里新增的列
+        added = await conn.run_sync(_sync_missing_columns)
+    if added:
+        log.warning("数据库已补齐缺失字段：%s", ", ".join(added))
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
