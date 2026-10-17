@@ -340,6 +340,23 @@ async def update_instance(instance_id: int, body: InstancePatch, ctx: Ctx = Depe
 
 
 # ====================================================================== 7.5–7.9 生命周期
+@router.post("/api/instances/batch/{action}")
+async def batch(action: str, request: Request, ctx: Ctx = Depends(current)):
+    """批量启动/停止：按队列串行执行（《实例模型设计》15.3）。"""
+    if action not in {"start", "stop"}:
+        raise ApiError(40003)
+    ids = (await request.json()).get("instance_ids") or []
+    results = []
+    for iid in ids[:100]:
+        try:
+            await own_instance(ctx.db, ctx.user, int(iid))
+            inst = await (engine.start(int(iid), actor=ctx.user) if action == "start" else engine.stop(int(iid), actor=ctx.user))
+            results.append({"instance_id": iid, "ok": True, "status": inst.status})
+        except ApiError as exc:
+            results.append({"instance_id": iid, "ok": False, "code": exc.code, "reason": exc.message})
+    return ok({"results": results})
+
+
 @router.post("/api/instances/{instance_id}/start")
 async def start_instance(instance_id: int, ctx: Ctx = Depends(current)):
     await own_instance(ctx.db, ctx.user, instance_id)
@@ -372,23 +389,6 @@ async def resume_instance(instance_id: int, ctx: Ctx = Depends(current)):
     await own_instance(ctx.db, ctx.user, instance_id)
     inst = await engine.resume(instance_id, actor=ctx.user)
     return ok({"instance_id": instance_id, "status": inst.status})
-
-
-@router.post("/api/instances/batch/{action}")
-async def batch(action: str, request: Request, ctx: Ctx = Depends(current)):
-    """批量启动/停止：按队列串行执行（《实例模型设计》15.3）。"""
-    if action not in {"start", "stop"}:
-        raise ApiError(40003)
-    ids = (await request.json()).get("instance_ids") or []
-    results = []
-    for iid in ids[:100]:
-        try:
-            await own_instance(ctx.db, ctx.user, int(iid))
-            inst = await (engine.start(int(iid), actor=ctx.user) if action == "start" else engine.stop(int(iid), actor=ctx.user))
-            results.append({"instance_id": iid, "ok": True, "status": inst.status})
-        except ApiError as exc:
-            results.append({"instance_id": iid, "ok": False, "code": exc.code, "reason": exc.message})
-    return ok({"results": results})
 
 
 @router.get("/api/instances/{instance_id}/status")

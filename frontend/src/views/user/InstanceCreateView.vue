@@ -143,7 +143,11 @@ async function submit() {
     account_id: form.paper ? null : form.account_id,
     paper_balance: form.paper ? form.paper_balance : null,
     paper_config: form.paper
-      ? { fee_rate: form.fee_rate, slippage: form.slippage, ...(form.market_type === 'futures' ? { leverage: form.leverage } : {}) }
+      ? {
+          fee_rate: form.fee_rate,
+          slippage: form.slippage,
+          ...(form.market_type === 'futures' ? { leverage: form.leverage } : {})
+        }
       : {
           ...(form.live_capital ? { live_capital: form.live_capital } : {}),
           ...(form.market_type === 'futures' ? { leverage: form.leverage } : {}),
