@@ -1229,6 +1229,37 @@ class Engine:
         if mode != "oneway":
             raise ApiError(42224, "目前只支持单向持仓（oneway）")
 
+    async def normalize_amount(self, ctx, amount: float, symbol: str) -> float:
+        """把下单数量对齐到交易所精度（stepSize）与最小量。
+
+        实盘直接问交易所；模拟盘按真实市场规则对齐（币安市场数据已加载），
+        避免模拟盘成交一堆实盘下不出去的数量。
+
+        对齐后如果低于最小量或最小名义额，返回 0，由调用方跳过该单。
+        """
+        if amount <= 0:
+            return 0.0
+        try:
+            # 带冒号 → 合约客户端；否则现货客户端
+            ex = market._rest(symbol)
+        except Exception:  # noqa: BLE001 - 拿不到市场信息就按原值返回，让交易所自己报错
+            return float(f"{amount:.8g}")
+        if ex is None:
+            return float(f"{amount:.8g}")
+        try:
+            amt = float(ex.amount_to_precision(symbol, amount))
+        except Exception:  # noqa: BLE001
+            return float(f"{amount:.8g}")
+        try:
+            mkt = ex.market(symbol)
+            lim = (mkt.get("limits") or {}).get("amount") or {}
+            min_amt = lim.get("min")
+            if min_amt is not None and amt < float(min_amt):
+                return 0.0
+        except Exception:  # noqa: BLE001
+            pass
+        return amt
+
     def _live_book(self, instance_id: int) -> PaperBook | FuturesBook | None:
         run = self.running.get(instance_id)
         return run.book if run and run.book is not None else self._books.get(instance_id)

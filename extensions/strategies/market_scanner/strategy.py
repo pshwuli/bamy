@@ -145,18 +145,26 @@ class MarketScannerStrategy(BaseStrategy):
         stats = {k: v for k, v in self.stats.items() if k not in self.pos and self.cool.get(k, 0) <= now}
         hits, near = pick(stats, p, self.sides)
         opened = False
+        tried = 0
+        fail_reason = ""
         for sym, side, chg, dist in hits:
             if len(self.pos) >= slots:
                 break
             what = "距高" if side == "long" else "距低"
             self.ctx.log_info(f"{head} | 命中 {sym} {self.window}{chg:+.1f}% {what}{dist:+.1f}%，开{SIDE_TXT[side]}")
+            tried += 1
             if await self._open(sym, side, float(stats[sym]["last"])):
                 opened = True
+            elif not fail_reason:
+                fail_reason = sym
         if opened:
             self.last_log = now
             await self._status(f"{head} | 持有 {'、'.join(self.pos)}", log=False)
             return
-        if near is not None:
+        if tried > 0 and not opened:
+            # 命中过但全部开仓失败：不能让状态显示成「无满足标的」，否则用户以为市场没机会
+            msg = f"{head} | 命中 {tried} 个但全部开仓失败（如 {fail_reason}），详见日志"
+        elif near is not None:
             sym, side, chg, dist, gap = near
             what = "距高" if side == "long" else "距低"
             msg = f"{head} | 空槽等待：无满足标的 | 离门槛最近 {sym} {self.window}{chg:+.1f}% {what}{dist:+.1f}%（还差 {gap:.1f}pp）"
@@ -239,7 +247,11 @@ class MarketScannerStrategy(BaseStrategy):
                 self.ctx.log_warn(f"{sym} 设置逐仓/杠杆失败：{exc}，跳过")
                 return False
         amount = notional / price
-        amount = float(f"{amount:.8g}")
+        # 按交易所 stepSize 对齐（不同币种精度差很大：BTC 1e-05、DOGE 1.0）
+        amount = await self.ctx.normalize_amount(amount, sym)
+        if amount <= 0:
+            self.ctx.log_warn(f"想开 {sym}，但按交易所精度对齐后数量为 0（低于最小下单量），跳过")
+            return False
         order = await (self.ctx.buy if side == "long" else self.ctx.sell)(amount, symbol=sym, reduce_only=False)
         if order.status in {"rejected", "failed"}:
             self.ctx.log_warn(f"{sym} 开{SIDE_TXT[side]}失败：{order.reason}")
@@ -290,13 +302,26 @@ class MarketScannerStrategy(BaseStrategy):
             bal = await self.ctx.fetch_balance()
             held = float((bal.get(_base(sym)) or {}).get("free") or 0)
             qty = min(qty, held) if held > 0 else qty
+        qty = await self.ctx.normalize_amount(qty, sym)
+        if qty <= 0:
+            # 数量对齐后为 0：持仓小于最小下单量，交易所平不掉，只能放弃跟踪
+            self.ctx.log_warn(f"{sym} {reason}，持仓量低于最小下单量，无法平仓，停止跟踪")
+            self._forget(sym)
+            await self._save()
+            return
         order = await (self.ctx.sell if pos["side"] == "long" else self.ctx.buy)(
-            float(f"{qty:.8g}"), symbol=sym, reduce_only=True)
+            qty, symbol=sym, reduce_only=True)
         if order.status in {"rejected", "failed"}:
-            self.ctx.log_warn(f"{sym} {reason}，平仓失败：{order.reason}")
-            if "持仓不足" in str(order.reason) or "42244" in str(order.reason) or "没有可平" in str(order.reason):
-                self._forget(sym)   # 仓位已经不在了（被强平或手动卖掉），不再反复尝试
-                await self._save()
+            msg = str(order.reason)
+            self.ctx.log_warn(f"{sym} {reason}，平仓失败：{msg}")
+            # 分三类处理，避免某种错误导致每 5 秒无限重试（触发交易所限频）
+            if any(k in msg for k in ("持仓不足", "42244", "没有可平", "position is zero")):
+                self._forget(sym)                       # 仓位已不在（强平/手动卖），不再跟踪
+            elif any(k in msg for k in ("-1021", "-1003", "429", "timeout", "Timeout", "Connection")):
+                self.cool[sym] = time.time() + 60        # 临时错误：退避 1 分钟
+            else:
+                self.cool[sym] = time.time() + 300       # 未知错误：退避 5 分钟，防止刷单
+            await self._save()
             return
         fill = float(order.filled_price or pos["entry"])
         pnl = (fill / pos["entry"] - 1) * 100 * (1 if pos["side"] == "long" else -1)
