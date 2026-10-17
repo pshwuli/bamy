@@ -182,36 +182,43 @@ class MarketScannerStrategy(BaseStrategy):
 
     # ------------------------------------------------------------------ 开平仓
     async def _equity_and_free(self) -> tuple[float, float]:
-        """
-        返回 (实例级权益, 账号可用余额)
-        - equity: 本实例的初始资金 + 本实例的浮动盈亏
-        - free: 账号级可用余额（用于校验是否足够下单）
+        """返回 (实例级权益, 账号可用余额)。
+
+        equity 的取法按运行模式分两种，不能混用：
+        - 模拟盘：fetch_balance() 返回的就是本实例的模拟账户，total 即实例权益。
+        - 实盘：fetch_balance() 返回的是**整个账号**的余额，多实例共享同一个账号时
+          拿它当 equity 会互相超配；改用实例自己的 live_capital + 本实例浮盈。
+
+        free 无论哪种模式都取账号可用余额，用来校验是否真的下得出来。
         """
         bal = await self.ctx.fetch_balance()
         usdt = bal.get("USDT") or {}
         account_free = float(usdt.get("free") or 0)
 
-        # 获取实例初始资金
-        from bamy.services.live_equity import live_capital
-        from bamy.db.session import session_scope
-        from bamy.db.models import Instance
-        async with session_scope() as db:
-            inst = await db.get(Instance, self.ctx.instance_id)
-            initial = live_capital(inst) if inst else 0.0
+        if self.ctx.paper:
+            # 模拟盘账户就是实例自己的，total 直接可用
+            instance_equity = float(usdt.get("total") or account_free)
+        else:
+            from bamy.services.live_equity import live_capital
+            from bamy.db.models import Instance
+            from bamy.db.session import session_scope
 
-        # 计算本实例的浮动盈亏
-        unrealized = 0.0
-        for sym, pos in self.pos.items():
-            t = self.ctx.get_ticker(sym) or {}
-            px = float(t.get("price") or pos["entry"])
-            if self.futures:
-                unrealized += (px - pos["entry"]) * pos["amount"] * (1 if pos["side"] == "long" else -1)
+            async with session_scope() as db:
+                inst = await db.get(Instance, self.ctx.instance_id)
+                initial = live_capital(inst) if inst else None
+            if not initial:
+                # 没设本金：退回账号总额，避免 equity=0 让实例完全无法开仓
+                instance_equity = float(usdt.get("total") or account_free)
             else:
-                # 现货持仓价值 - 初始成本
-                unrealized += (px - pos["entry"]) * pos["amount"]
-
-        # 实例级权益 = 初始资金 + 浮动盈亏
-        instance_equity = initial + unrealized if initial else 0.0
+                unrealized = 0.0
+                for sym, pos in self.pos.items():
+                    t = self.ctx.get_ticker(sym) or {}
+                    px = float(t.get("price") or pos["entry"])
+                    if self.futures:
+                        unrealized += (px - pos["entry"]) * pos["amount"] * (1 if pos["side"] == "long" else -1)
+                    else:
+                        unrealized += (px - pos["entry"]) * pos["amount"]
+                instance_equity = initial + unrealized
 
         return instance_equity, account_free
 
@@ -220,7 +227,9 @@ class MarketScannerStrategy(BaseStrategy):
         quote = min(equity * float(self.p["position_pct"]) / 100, free * 0.98)
         notional = quote * self.lev
         if notional < MIN_NOTIONAL:
-            self.ctx.log_warn(f"想开 {sym}，但可用资金 {free:.2f} USDT 不够最小下单额，跳过")
+            self.ctx.log_warn(f"想开 {sym}，但计算出的下单金额 {notional:.2f} USDT "
+                              f"低于最小下单额 {MIN_NOTIONAL:.0f}，跳过"
+                              f"（实例权益 {equity:.2f}，账号可用 {free:.2f}）")
             return False
         if self.futures and not self.ctx.paper:
             try:
