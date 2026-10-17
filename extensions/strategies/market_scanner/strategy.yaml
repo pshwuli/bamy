@@ -7,11 +7,13 @@ author: bamy
 description: >-
   一个实例扫描币安全部 USDT 交易对，只买"短时间暴涨、而且还贴着高点"的币：
   先按成交额粗筛，再看近 4 小时涨幅和离 4 小时最高价的距离，满足条件才开仓。
-  出场：浮盈先摸到 +4%，之后从最高点回撤 3% 止盈；亏到 -4% 止损；最长拿 48 小时。
+  出场：浮盈先摸到 +4%，之后从最高点回撤 3% 止盈；亏到 -10% 止损；最长拿 8 小时。
   同一个币平仓后冷却 3 小时。现货只做多；U 本位合约可以只做多、只做空或双向。
-  默认参数就是你给的原规则（4h 涨幅 ≥20%、距 4h 高 ≥-5%、成交额 ≥500 万 U）。
-  注意：原规则没有做过回测优化，按我们之前粗测的经验胜率大约 30%，靠少数大涨的单子赚钱，
-  连续止损很常见。请先用模拟盘跑一段时间再决定是否上实盘。
+  入场条件沿用原规则（4h 涨幅 ≥20%、距 4h 高 ≥-5%、成交额 ≥500 万 U），没有改动。
+  出场与仓位参照旧版 v1 引擎的实盘配置做了调整（3 个仓、每仓 15% 权益、-10% 止损、8 小时、回撤 3 次确认）：
+  只靠 4% 止损的单仓版本连续止损很常见，改成分散持仓、放宽止损。
+  注意：这组参数没有做过回测，只是依据旧引擎的实盘记录和公开资料做的经验调整；
+  原规则的粗测胜率约 30%，靠少数大涨的单子赚钱。请先用模拟盘跑一段时间再决定是否上实盘。
 tags: [全市场, 扫描, 动量, 追涨, 移动止盈, 现货, 合约]
 min_bamy_version: 1.0.0
 license: MIT
@@ -98,7 +100,7 @@ params:
   - key: slots
     label: 同时持仓数
     type: int
-    default: 1
+    default: 3
     min: 1
     max: 10
     suffix: 个
@@ -108,7 +110,7 @@ params:
   - key: position_pct
     label: 每仓投入
     type: percent
-    default: 95
+    default: 15
     min: 1
     max: 100
     suffix: "% 权益"
@@ -129,7 +131,7 @@ params:
   - key: stop_pct
     label: 止损
     type: float
-    default: 4
+    default: 10
     min: 0.5
     max: 50
     suffix: "%"
@@ -159,7 +161,7 @@ params:
   - key: confirm_ticks
     label: 回撤确认
     type: int
-    default: 1
+    default: 3
     min: 1
     max: 10
     suffix: 次
@@ -169,7 +171,7 @@ params:
   - key: max_hold_hours
     label: 最长持仓
     type: float
-    default: 48
+    default: 8
     min: 1
     max: 720
     suffix: 小时
