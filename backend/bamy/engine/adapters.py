@@ -232,7 +232,16 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
         can_trade = bool(account.get("canTrade", True))
         if not self.readonly and not can_trade:
             raise ExchangeError("该密钥没有 U 本位合约交易权限", 42211)
-        return {"can_trade": can_trade, "can_withdraw": bool(account.get("canWithdraw"))}
+
+        # 查询持仓模式（单向/双向）
+        position_mode = None
+        try:
+            pm = await self.client.fapiPrivateGetPositionSideDual()
+            position_mode = "hedge" if pm.get("dualSidePosition") else "oneway"
+        except Exception:  # noqa: BLE001
+            pass  # 查询失败不影响验证，下单时会再处理
+
+        return {"can_trade": can_trade, "can_withdraw": bool(account.get("canWithdraw")), "position_mode": position_mode}
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         try:
@@ -264,10 +273,24 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
 
     async def create_order(self, symbol: str, side: str, amount: float, price: float | None,
                            type_: str = "market", client_order_id: str | None = None,
-                           stop_price: float | None = None, reduce_only: bool = False) -> ExchangeOrder:
+                           stop_price: float | None = None, reduce_only: bool = False,
+                           position_mode: str | None = None) -> ExchangeOrder:
         params: dict[str, Any] = {"newClientOrderId": client_order_id} if client_order_id else {}
-        if reduce_only:
+
+        # hedge 模式：必须指定 positionSide
+        if position_mode == "hedge":
+            # 开多 → LONG，开空 → SHORT
+            # 平仓也带 positionSide，但【不加】reduceOnly（hedge 模式的平仓规则）
+            if reduce_only:
+                # 平仓：根据 side 反向确定 positionSide（buy 平空 → SHORT，sell 平多 → LONG）
+                params["positionSide"] = "SHORT" if side == "buy" else "LONG"
+            else:
+                # 开仓：buy → LONG，sell → SHORT
+                params["positionSide"] = "LONG" if side == "buy" else "SHORT"
+        elif reduce_only:
+            # 单向模式平仓：加 reduceOnly，不传 positionSide
             params["reduceOnly"] = True
+
         otype = type_
         if type_ in {"stop_market", "stop_limit"}:
             otype = "STOP_MARKET" if type_ == "stop_market" else "STOP"
@@ -277,6 +300,12 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
         except ccxt.InsufficientFunds as exc:
             raise ExchangeError(f"保证金不足：{exc}", 42243, rejected=True) from exc
         except (ccxt.InvalidOrder, ccxt.BadRequest, ccxt.OrderNotFound) as exc:
+            # 捕获 -4061 错误并给出友好提示
+            if "-4061" in str(exc):
+                raise ExchangeError(
+                    "下单被拒：该账号持仓模式为双向，下单需指定方向。请在账号设置中检查并更新持仓模式配置。",
+                    42201, rejected=True
+                ) from exc
             raise ExchangeError(f"下单被拒：{exc}", 42201, rejected=True) from exc
         except (ccxt.NetworkError, ccxt.RequestTimeout) as exc:
             raise ExchangeError(f"下单结果未知：{exc}", 50401, unknown=True) from exc

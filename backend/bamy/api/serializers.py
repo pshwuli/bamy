@@ -21,7 +21,8 @@ def account_out(a: Account, instance_count: int = 0) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         key = "****"
     return {"id": a.id, "owner_id": a.owner_id, "name": a.name, "api_key_masked": key, "exchange": a.exchange,
-            "env": a.env, "market_type": a.market_type, "readonly": bool(a.readonly), "status": a.status,
+            "env": a.env, "market_type": a.market_type, "position_mode": a.position_mode,
+            "readonly": bool(a.readonly), "status": a.status,
             "remark": a.remark, "ip_whitelist": jload(a.ip_whitelist, []),
             "last_verified_at": iso(a.last_verified_at), "last_active_at": iso(a.last_active_at),
             "instance_count": instance_count, "created_at": iso(a.created_at), "updated_at": iso(a.updated_at)}

@@ -800,7 +800,11 @@ class Engine:
         async with session_scope() as db:
             account = await db.get(Account, inst.account_id)
         client = await pool.get(account)
-        extra = {"reduce_only": reduce_only} if inst.market_type == "futures" else {}
+        extra = {}
+        if inst.market_type == "futures":
+            extra["reduce_only"] = reduce_only
+            # 传入持仓模式供下单方法使用
+            extra["position_mode"] = account.position_mode
         delays = [2, 5, 5]
         for attempt in range(len(delays) + 1):
             try:

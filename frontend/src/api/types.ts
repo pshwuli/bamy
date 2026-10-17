@@ -60,7 +60,8 @@ export interface Account {
   api_key_masked?: string
   exchange?: string
   env: 'mainnet' | 'testnet' | string
-  market_type: 'spot' | string
+  market_type: 'spot' | 'futures' | string
+  position_mode?: 'oneway' | 'hedge' | null
   readonly: boolean
   status: string
   remark?: string | null

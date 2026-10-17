@@ -233,6 +233,11 @@ async def verify_account(account_id: int, ctx: Ctx = Depends(current)):
         return ok({"ok": False, "code": exc.code, "reason": exc.message, "status": acc.status})
     was = acc.status
     acc.status, acc.last_verified_at, acc.last_active_at = "online", datetime.utcnow(), datetime.utcnow()
+
+    # 保存持仓模式（仅合约）
+    if acc.market_type == "futures" and "position_mode" in info:
+        acc.position_mode = info["position_mode"]
+
     ctx.db.add(AccountHealth(account_id=acc.id, success=True,
                              latency_ms=int((datetime.utcnow() - started).total_seconds() * 1000)))
     await ctx.db.commit()

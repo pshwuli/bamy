@@ -79,6 +79,9 @@ export default {
     avgLatency: '平均延迟',
     lastCheck: '最近探活',
     keyRule: 'API Key 至少 16 位',
+    positionMode: '持仓模式',
+    oneway: '单向持仓',
+    hedge: '双向持仓',
   },
   strategy: {
     title: '策略',

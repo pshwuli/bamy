@@ -317,6 +317,9 @@ watch(
               <el-descriptions-item :label="t('account.exchange')">{{ acc.exchange || 'binance' }}</el-descriptions-item>
               <el-descriptions-item :label="t('account.env')">{{ envLabel(acc.env) }}</el-descriptions-item>
               <el-descriptions-item :label="t('account.market')">{{ acc.market_type === 'spot' ? t('market.spot') : acc.market_type }}</el-descriptions-item>
+              <el-descriptions-item v-if="acc.market_type === 'futures' && acc.position_mode" :label="t('account.positionMode')">
+                {{ acc.position_mode === 'oneway' ? t('account.oneway') : acc.position_mode === 'hedge' ? t('account.hedge') : acc.position_mode }}
+              </el-descriptions-item>
               <el-descriptions-item :label="t('account.readonly')">{{ acc.readonly ? t('common.yes') : t('common.no') }}</el-descriptions-item>
               <el-descriptions-item :label="t('account.instanceCount')">{{ acc.instance_count ?? 0 }}</el-descriptions-item>
               <el-descriptions-item :label="t('account.lastActive')">{{ fmtTime(acc.last_active_at) }}</el-descriptions-item>

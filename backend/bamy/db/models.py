@@ -90,6 +90,7 @@ class Account(Base, TimestampMixin):
     exchange: Mapped[str] = mapped_column(String(16), default="binance", nullable=False)
     env: Mapped[str] = mapped_column(String(16), default="mainnet", nullable=False)
     market_type: Mapped[str] = mapped_column(String(16), default="spot", nullable=False)
+    position_mode: Mapped[str | None] = mapped_column(String(16))  # oneway | hedge，仅合约；自动检测填充
     readonly: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="offline", nullable=False)
     remark: Mapped[str | None] = mapped_column(Text)
