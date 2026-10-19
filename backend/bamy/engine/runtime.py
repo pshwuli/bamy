@@ -72,6 +72,8 @@ class Engine:
         self._op_locks: dict[int, asyncio.Lock] = {}
         self._books: dict[int, PaperBook | FuturesBook] = {}
         self._book_locks: dict[int, asyncio.Lock] = {}
+        self._order_locks: dict[int, asyncio.Lock] = {}
+        self._state_locks: dict[tuple[str, int, str], asyncio.Lock] = {}
         self.ready = False
         self.started_at = time.time()
         self._log_buffer: list[SystemLog] = []
@@ -83,6 +85,12 @@ class Engine:
     # ======================================================================
     def op_lock(self, instance_id: int) -> asyncio.Lock:
         return self._op_locks.setdefault(instance_id, asyncio.Lock())
+
+    def order_lock(self, order_id: int) -> asyncio.Lock:
+        return self._order_locks.setdefault(order_id, asyncio.Lock())
+
+    def state_lock(self, scope: str, owner_id: int, key: str) -> asyncio.Lock:
+        return self._state_locks.setdefault((scope, owner_id, key[:64]), asyncio.Lock())
 
     def set_broadcaster(self, fn) -> None:
         self._ws_broadcast = fn
@@ -150,45 +158,52 @@ class Engine:
 
     # ---- 实例级状态（ctx.state） ----
     async def state_get(self, instance_id: int, key: str) -> str | None:
+        normalized_key = key[:64]
         async with session_scope() as db:
             row = (await db.execute(select(InstanceState).where(
-                InstanceState.instance_id == instance_id, InstanceState.key == key))).scalar_one_or_none()
+                InstanceState.instance_id == instance_id, InstanceState.key == normalized_key))).scalar_one_or_none()
             return row.value if row else None
 
     async def state_set(self, instance_id: int, key: str, value: str) -> None:
-        async with session_scope() as db:
-            rows = (await db.execute(select(InstanceState).where(InstanceState.instance_id == instance_id))).scalars().all()
-            size = sum(len(r.value or "") for r in rows if r.key != key) + len(value)
-            if size > STATE_LIMIT:
-                raise ValueError(f"策略状态超过上限 {STATE_LIMIT} 字节")
-            row = next((r for r in rows if r.key == key), None)
-            if row is None:
-                db.add(InstanceState(instance_id=instance_id, key=key[:64], value=value))
-            else:
-                row.value = value
-            await db.commit()
+        normalized_key = key[:64]
+        async with self.state_lock("instance", instance_id, normalized_key):
+            async with session_scope() as db:
+                rows = (await db.execute(select(InstanceState).where(InstanceState.instance_id == instance_id))).scalars().all()
+                size = sum(len(r.value or "") for r in rows if r.key != normalized_key) + len(value)
+                if size > STATE_LIMIT:
+                    raise ValueError(f"策略状态超过上限 {STATE_LIMIT} 字节")
+                row = next((r for r in rows if r.key == normalized_key), None)
+                if row is None:
+                    db.add(InstanceState(instance_id=instance_id, key=normalized_key, value=value))
+                else:
+                    row.value = value
+                await db.commit()
 
     async def state_delete(self, instance_id: int, key: str) -> None:
+        normalized_key = key[:64]
         async with session_scope() as db:
             await db.execute(delete(InstanceState).where(InstanceState.instance_id == instance_id,
-                                                         InstanceState.key == key))
+                                                         InstanceState.key == normalized_key))
             await db.commit()
 
     async def plugin_state_set(self, binding_id: int, key: str, value: str) -> None:
-        async with session_scope() as db:
-            row = (await db.execute(select(PluginState).where(PluginState.binding_id == binding_id,
-                                                              PluginState.key == key))).scalar_one_or_none()
-            if len(value) > STATE_LIMIT:
-                raise ValueError("插件状态超过上限")
-            if row is None:
-                db.add(PluginState(binding_id=binding_id, key=key[:64], value=value))
-            else:
-                row.value = value
-            await db.commit()
+        normalized_key = key[:64]
+        if len(value) > STATE_LIMIT:
+            raise ValueError("插件状态超过上限")
+        async with self.state_lock("plugin", binding_id, normalized_key):
+            async with session_scope() as db:
+                row = (await db.execute(select(PluginState).where(PluginState.binding_id == binding_id,
+                                                                  PluginState.key == normalized_key))).scalar_one_or_none()
+                if row is None:
+                    db.add(PluginState(binding_id=binding_id, key=normalized_key, value=value))
+                else:
+                    row.value = value
+                await db.commit()
 
     async def plugin_state_delete(self, binding_id: int, key: str) -> None:
+        normalized_key = key[:64]
         async with session_scope() as db:
-            await db.execute(delete(PluginState).where(PluginState.binding_id == binding_id, PluginState.key == key))
+            await db.execute(delete(PluginState).where(PluginState.binding_id == binding_id, PluginState.key == normalized_key))
             await db.commit()
 
     # ======================================================================
@@ -866,6 +881,10 @@ class Engine:
         return view
 
     async def _apply_result(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
+        async with self.order_lock(order_id):
+            return await self._apply_result_locked(order_id, result, submitted=submitted)
+
+    async def _apply_result_locked(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
         """按单调状态和成交量收敛并发返回、用户流和对账事件。"""
         async with session_scope() as db:
             o = await db.get(Order, order_id)
@@ -873,18 +892,24 @@ class Engine:
             terminal = {"filled", "canceled", "rejected", "failed"}
             rank = {"pending": 0, "submitting": 1, "submitted": 2, "partial": 3,
                     "canceling": 3, "unknown": 1, "filled": 4, "canceled": 4, "rejected": 4, "failed": 4}
-            incoming = result.status
-            if before in terminal and incoming not in terminal:
+            incoming = result.status if result.status in rank else "unknown"
+            incoming_filled = min(max(Decimal(0), Decimal(str(result.filled_amount or 0))), o.amount)
+            if before in terminal and (before == "filled" or incoming != "filled"):
+                o.filled_amount = max(o.filled_amount or Decimal(0), incoming_filled)
+                if result.filled_price and incoming_filled >= (o.filled_amount or Decimal(0)):
+                    o.filled_price = Decimal(str(result.filled_price))
+                if result.raw is not None:
+                    o.raw_response = json.dumps(result.raw, default=str)[:20000]
+                await db.commit()
+                await db.refresh(o)
                 return _view(o)
-            if before == "filled" and incoming != "filled":
-                return _view(o)
-            if rank.get(incoming, -1) < rank.get(before, -1) and incoming not in {"unknown", "failed"}:
+            if rank[incoming] < rank.get(before, -1) and incoming not in {"unknown", "failed"}:
                 return _view(o)
             if result.exchange_order_id:
                 o.exchange_order_id = result.exchange_order_id
             if submitted and o.submitted_at is None:
                 o.submitted_at = datetime.utcnow()
-            o.filled_amount = max(o.filled_amount or Decimal(0), Decimal(str(result.filled_amount or 0)))
+            o.filled_amount = max(o.filled_amount or Decimal(0), incoming_filled)
             if result.filled_price:
                 o.filled_price = Decimal(str(result.filled_price))
             if result.fee or result.fee_currency:
@@ -898,6 +923,8 @@ class Engine:
                 o.filled_at = datetime.utcnow()
             if result.status == "canceled":
                 o.canceled_at = datetime.utcnow()
+                if o.filled_amount and o.filled_amount >= o.amount:
+                    o.status = "filled"
             if result.raw is not None:
                 o.raw_response = json.dumps(result.raw, default=str)[:20000]
             await db.commit()

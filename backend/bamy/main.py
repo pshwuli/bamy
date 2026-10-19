@@ -83,19 +83,24 @@ async def startup() -> None:
     bus.add_plugin_dispatcher(plugin_hub.dispatch)
     await plugin_hub.load_bindings()
     user_stream.engine = engine
+    recovery_failed = False
     if settings.auto_recover_on_boot:
         try:
             if settings.reconcile_before_recover and settings.enable_live_trading:
                 await engine.reconcile_all()
             summary = await engine.recover()
             log.info("崩溃恢复：%s", summary)
-        except Exception:  # noqa: BLE001 - 恢复失败不阻止服务启动
-            log.exception("崩溃恢复失败")
+        except Exception:  # noqa: BLE001 - 保持未就绪，避免接收交易请求
+            recovery_failed = True
+            log.exception("崩溃恢复失败，服务保持未就绪")
     scheduler.start(engine)
-    if settings.enable_live_trading:
+    if settings.enable_live_trading and not recovery_failed:
         scheduler.every("user_stream_sync", 15, user_stream.sync, delay=3)
-    engine.ready = True
-    log.info("BAMY %s 已就绪（env=%s，实盘=%s）", __version__, settings.app_env, settings.enable_live_trading)
+    engine.ready = not recovery_failed
+    if engine.ready:
+        log.info("BAMY %s 已就绪（env=%s，实盘=%s）", __version__, settings.app_env, settings.enable_live_trading)
+    else:
+        log.error("BAMY 启动未就绪：恢复阶段失败，请检查日志后重启")
 
 
 async def shutdown() -> None:

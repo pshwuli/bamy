@@ -306,18 +306,31 @@ const ord = useTable<Order>((q) => instancesApi.orders(id.value, q), { status: '
   immediate: false,
   transform: (q) => ({ ...q, start_time: orderRange.value?.[0], end_time: orderRange.value?.[1] }),
 })
-const ORDER_STATUSES = ['submitted', 'partial', 'filled', 'canceled', 'rejected', 'unknown', 'failed'] as const
+const ORDER_STATUSES = ['pending', 'submitting', 'submitted', 'partial', 'filled', 'canceled', 'rejected', 'unknown', 'failed'] as const
+const canceling = ref<number | 'all' | null>(null)
 function resetOrders() {
   orderRange.value = null
   void ord.resetFilters()
 }
 async function cancelOrder(o: Row) {
+  if (canceling.value !== null) return
   if (!(await confirm(t('instx.cancelOrderConfirm', { id: o.client_order_id || o.id })))) return
-  if (await attempt(async () => (await instancesApi.cancelOrder(id.value, o.id), true))) void ord.load()
+  canceling.value = o.id
+  try {
+    if (await attempt(async () => (await instancesApi.cancelOrder(id.value, o.id), true))) void ord.load()
+  } finally {
+    canceling.value = null
+  }
 }
 async function cancelAllOrders() {
+  if (canceling.value !== null) return
   if (!(await confirm(t('instance.cancelAllConfirm'), t('instance.cancelAll'), true))) return
-  if (await attempt(async () => (await instancesApi.cancelAll(id.value), true))) void ord.load()
+  canceling.value = 'all'
+  try {
+    if (await attempt(async () => (await instancesApi.cancelAll(id.value), true))) void ord.load()
+  } finally {
+    canceling.value = null
+  }
 }
 
 // ---------- 日志 ----------

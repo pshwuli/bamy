@@ -69,6 +69,8 @@ class OrderView:
     exchange_order_id: str | None = None
     symbol: str = ""
     side: str = "buy"
+    position_side: str | None = None
+    position_side: str | None = None
     type: str = "market"
     amount: float = 0.0
     price: float | None = None

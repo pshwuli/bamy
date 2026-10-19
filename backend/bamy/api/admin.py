@@ -516,7 +516,7 @@ async def health(db=Depends(get_session)):
     checks["engine"] = "ok" if engine.ready else "starting"
     stale = [s for s in market.subscriptions() if market.is_stale(s)]
     checks["market_hub"] = "ok" if not stale else f"stale: {','.join(stale)}"
-    healthy = checks["database"] == "ok" and engine.ready
+    healthy = checks["database"] == "ok" and checks["market_hub"] == "ok" and engine.ready
     body = {"status": "healthy" if healthy else "unhealthy", "version": __version__,
             "uptime": int(time.time() - engine.started_at), "checks": checks,
             "readonly": READONLY["on"]}

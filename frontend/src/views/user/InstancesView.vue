@@ -44,7 +44,7 @@ void accountsApi.list({ page: 1, page_size: 100 }).then((d) => (accounts.value =
 
 const STOPPED = new Set(['stopped', 'error', 'created'])
 const isStopped = (r: Row) => STOPPED.has(r.status)
-const canStop = (r: Row) => ['running', 'paused', 'starting', 'resuming', 'pausing'].includes(r.status)
+const canStop = (r: Row) => ['running', 'paused', 'starting', 'resuming', 'pausing', 'stopping'].includes(r.status)
 const caps = (r: Row): Record<string, boolean> => r.capabilities ?? strategies.value.find((s) => s.id === r.strategy_id)?.capabilities ?? {}
 const pausable = (r: Row) => !!caps(r).pause
 const resumable = (r: Row) => !!caps(r).resume

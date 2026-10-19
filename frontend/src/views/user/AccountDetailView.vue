@@ -387,7 +387,9 @@ watch(
                   </template>
                 </el-table-column>
                 <el-table-column :label="t('instance.symbol')" min-width="110"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
-                <el-table-column :label="t('instance.side')" prop="side" width="80" />
+                <el-table-column :label="t('instance.side')" width="90">
+                  <template #default="{ row }">{{ row.position_side === 'long' || row.side === 'long' ? t('side.long') : row.position_side === 'short' || row.side === 'short' ? t('side.short') : row.side || '-' }}</template>
+                </el-table-column>
                 <el-table-column :label="t('instance.amount')" align="right" min-width="110">
                   <template #default="{ row }">{{ fmtNum(row.amount, 8) }}</template>
                 </el-table-column>

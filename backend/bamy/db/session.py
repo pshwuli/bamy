@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import UniqueConstraint, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bamy.core.config import settings
@@ -53,14 +53,7 @@ SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=
 
 
 def _sync_missing_columns(sync_conn) -> list[str]:
-    """给已存在的表补齐 ORM 模型里新增、但库里还没有的列。
-
-    `Base.metadata.create_all` 只建新表，不会改已有表结构。新增字段后不补列，
-    查询会直接报 `no such column: xxx`（例如 accounts.position_mode）。
-
-    只做「加列」，不做改名/改类型/删列——那些需要人工迁移，避免误删数据。
-    新增列一律允许 NULL：历史行没有值，强制 NOT NULL 会加不上。
-    """
+    """补齐新增列，并在可执行时补齐模型声明的索引/唯一约束。"""
     inspector = inspect(sync_conn)
     existing_tables = set(inspector.get_table_names())
     dialect = sync_conn.dialect
@@ -68,20 +61,51 @@ def _sync_missing_columns(sync_conn) -> list[str]:
 
     for table in Base.metadata.sorted_tables:
         if table.name not in existing_tables:
-            continue  # create_all 已经建好了新表
+            continue
         have = {c["name"] for c in inspector.get_columns(table.name)}
         for column in table.columns:
             if column.name in have:
                 continue
             try:
-                # column.type 是 TypeEngine 实例，传入方言实例即可编译成 DDL 片段
                 col_type = column.type.compile(dialect=dialect)
-            except Exception as exc:  # noqa: BLE001 - 推断失败就跳过，不阻塞启动
+            except Exception as exc:  # noqa: BLE001
                 log.warning("无法推断字段类型，跳过 %s.%s：%s", table.name, column.name, exc)
                 continue
             ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
             sync_conn.execute(text(ddl))
             added.append(f"{table.name}.{column.name}")
+
+    existing_indexes = {index["name"] for table in existing_tables
+                        for index in inspector.get_indexes(table)}
+    existing_constraints = {constraint["name"] for table in existing_tables
+                            for constraint in inspector.get_unique_constraints(table)}
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        for constraint in table.constraints:
+            if not isinstance(constraint, UniqueConstraint):
+                continue
+            name = constraint.name
+            if not name or name in existing_constraints:
+                continue
+            columns = ", ".join(f'"{column.name}"' for column in constraint.columns)
+            try:
+                sync_conn.execute(text(f'CREATE UNIQUE INDEX "{name}" ON "{table.name}" ({columns})'))
+                existing_constraints.add(name)
+                added.append(f"{table.name}.{name}")
+            except Exception as exc:  # noqa: BLE001 - duplicate legacy rows need manual cleanup
+                log.warning("无法补齐唯一约束 %s.%s：%s", table.name, name, exc)
+        for index in table.indexes:
+            name = index.name
+            if not name or name in existing_indexes:
+                continue
+            columns = ", ".join(f'"{column.name}"' for column in index.columns)
+            try:
+                sync_conn.execute(text(f'CREATE INDEX "{name}" ON "{table.name}" ({columns})'))
+                existing_indexes.add(name)
+                added.append(f"{table.name}.{name}")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("无法补齐索引 %s.%s：%s", table.name, name, exc)
 
     return added
 

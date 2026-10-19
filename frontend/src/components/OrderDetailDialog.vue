@@ -58,7 +58,9 @@ const src = (s?: string) => (s && te(`source.${s}`) ? t(`source.${s}`) : s || '-
             <router-link :to="`/instances/${order.instance_id}`" @click="open = false">{{ order.instance_name || `#${order.instance_id}` }}</router-link>
           </el-descriptions-item>
           <el-descriptions-item :label="t('order.symbol')">{{ fmtSymbol(order.symbol) }}</el-descriptions-item>
-          <el-descriptions-item :label="t('order.side')">{{ t(`side.${order.side}`) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('order.side')">
+            {{ t(`side.${order.side}`) }}<span v-if="order.position_side" class="muted"> ({{ order.position_side === 'long' ? t('side.long') : t('side.short') }})</span>
+          </el-descriptions-item>
           <el-descriptions-item :label="t('order.type')">{{ order.type }}</el-descriptions-item>
           <el-descriptions-item :label="t('order.amount')">{{ fmtNum(order.amount, 8) }}</el-descriptions-item>
           <el-descriptions-item :label="t('order.price')">{{ fmtNum(order.price, 8) }}</el-descriptions-item>
@@ -66,7 +68,7 @@ const src = (s?: string) => (s && te(`source.${s}`) ? t(`source.${s}`) : s || '-
           <el-descriptions-item :label="t('order.filledPrice')">{{ fmtNum(order.filled_price, 8) }}</el-descriptions-item>
           <el-descriptions-item :label="t('order.source')">{{ src(order.source) }}</el-descriptions-item>
           <el-descriptions-item :label="t('order.time')">{{ fmtTime(order.created_at) }}</el-descriptions-item>
-          <el-descriptions-item v-if="order.reject_reason" :label="t('order.rejectReason')" :span="2">{{ order.reject_reason }}</el-descriptions-item>
+          <el-descriptions-item v-if="order.reason || order.reject_reason" :label="t('order.rejectReason')" :span="2">{{ order.reason || order.reject_reason }}</el-descriptions-item>
         </el-descriptions>
         <h4>{{ t('order.fills') }}</h4>
         <el-table :data="fills" size="small" stripe>

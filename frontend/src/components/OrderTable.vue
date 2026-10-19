@@ -34,8 +34,11 @@ const src = (s?: string) => (s && te(`source.${s}`) ? t(`source.${s}`) : s || '-
       <template #default="{ row }"><router-link :to="`/instances/${row.instance_id}`">{{ row.instance_name || `#${row.instance_id}` }}</router-link></template>
     </el-table-column>
     <el-table-column :label="t('order.symbol')" min-width="100"><template #default="{ row }">{{ fmtSymbol(row.symbol) }}</template></el-table-column>
-    <el-table-column :label="t('order.side')" width="70">
-      <template #default="{ row }"><span :class="row.side === 'buy' ? 'pnl-up' : 'pnl-down'">{{ t(`side.${row.side}`) }}</span></template>
+    <el-table-column :label="t('order.side')" width="90">
+      <template #default="{ row }">
+        <span :class="row.side === 'buy' ? 'pnl-up' : 'pnl-down'">{{ t(`side.${row.side}`) }}</span>
+        <span v-if="row.position_side" class="muted" style="margin-left: 4px">({{ row.position_side === 'long' ? t('side.long') : t('side.short') }})</span>
+      </template>
     </el-table-column>
     <el-table-column v-if="!compact" prop="type" :label="t('order.type')" width="80" />
     <el-table-column :label="t('order.amount')" min-width="100" align="right"><template #default="{ row }">{{ fmtNum(row.amount, 8) }}</template></el-table-column>

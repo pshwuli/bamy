@@ -194,7 +194,15 @@ class PluginHealth(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     last_error_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
-    __table_args__ = (Index("ix_plugin_health_plugin_binding", "plugin_id", "binding_id"),)
+    __table_args__ = (
+        Index("ix_plugin_health_plugin_binding", "plugin_id", "binding_id"),
+        Index("uq_plugin_health_plugin_binding", "plugin_id", "binding_id", unique=True,
+              sqlite_where=text("binding_id IS NOT NULL"),
+              postgresql_where=text("binding_id IS NOT NULL")),
+        Index("uq_plugin_health_plugin_global", "plugin_id", unique=True,
+              sqlite_where=text("binding_id IS NULL"),
+              postgresql_where=text("binding_id IS NULL")),
+    )
 
 
 class Instance(Base, TimestampMixin):

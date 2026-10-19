@@ -135,6 +135,7 @@ export interface Order {
   filled_price?: number | null
   status: OrderStatus
   source: string
+  reason?: string | null
   reject_reason?: string | null
   plugin_rejection?: PluginRejection | null
   created_at: string

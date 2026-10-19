@@ -258,9 +258,12 @@ class FuturesBook:
                              (target == "short" and side == "buy"))
         closing = min(float(p["amount"]), amount) if p and closing_direction else 0.0
         if reduce_only:
-            return None if closing > 0 else 42244
-        if position_side is not None and closing_direction and not p:
-            return 42244
+            if not p or not closing_direction or amount > float(p["amount"]) + 1e-12:
+                return 42244
+            return None
+        if position_side is not None and closing_direction:
+            if not p or amount > float(p["amount"]) + 1e-12:
+                return 42244
         opening = amount - closing
         if opening <= 0:
             return None
@@ -283,8 +286,10 @@ class FuturesBook:
         close_key, p = self._position(symbol, target)
         closing_direction = ((target == "long" and side == "sell") or
                              (target == "short" and side == "buy"))
-        if p and closing_direction and (reduce_only or position_side is None):
-            qty = min(amt, p["amount"])
+        if reduce_only and (not p or not closing_direction or amt > p["amount"] + Decimal("1e-12")):
+            raise ExchangeError("没有足够的反向持仓（reduce_only）", 42244, rejected=True)
+        if p and closing_direction and (reduce_only or position_side is not None):
+            qty = amt if reduce_only else min(amt, p["amount"])
             sign = 1 if p["side"] == "long" else -1
             pnl = (px - p["entry"]) * qty * sign
             fee = qty * px * fee_rate
@@ -318,8 +323,10 @@ class FuturesBook:
                 cur["entry"] = (cur["entry"] * cur["amount"] + px * amt) / total
                 cur["amount"] = total
                 cur["margin"] += margin
+        executed = _D(amount) - amt
         return ExchangeOrder(exchange_order_id=f"paper-{client_order_id}", status="filled",
-                             filled_amount=float(amount), filled_price=float(px), fee=float(total_fee),
+                             filled_amount=float(executed), filled_price=float(px) if executed else None,
+                             fee=float(total_fee),
                              raw={"paper": True, "futures": True}, client_order_id=client_order_id)
 
     def place_limit(self, client_order_id: str, symbol: str, side: str, amount: float, price: float,
