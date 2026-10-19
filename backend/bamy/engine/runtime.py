@@ -918,10 +918,10 @@ class Engine:
                 o.fee_currency = result.fee_currency[:16]
             elif o.account_id is None and result.fee:
                 o.fee_currency = "USDT"           # 模拟盘手续费一律按 USDT 扣
-            o.status = result.status
-            if result.status == "filled":
+            o.status = incoming
+            if incoming == "filled":
                 o.filled_at = datetime.utcnow()
-            if result.status == "canceled":
+            if incoming == "canceled":
                 o.canceled_at = datetime.utcnow()
                 if o.filled_amount and o.filled_amount >= o.amount:
                     o.status = "filled"

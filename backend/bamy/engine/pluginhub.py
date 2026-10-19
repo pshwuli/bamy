@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from bamy.core.crypto import decrypt
 from bamy.db.models import Account, PluginBinding, PluginHealth
@@ -337,6 +338,11 @@ class PluginHub:
                     row = PluginHealth(plugin_id=b.plugin_id, binding_id=binding_id, invoke_count=0,
                                        error_count=0, consecutive_errors=0)
                     db.add(row)
+                    try:
+                        await db.flush()
+                    except IntegrityError:
+                        await db.rollback()
+                        row = (await db.execute(stmt)).scalar_one()
                 n = (row.invoke_count or 0) + 1
                 row.invoke_count = n
                 if kind == "event":
