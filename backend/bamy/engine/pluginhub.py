@@ -12,12 +12,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from bamy.core.crypto import decrypt
 from bamy.db.models import Account, PluginBinding, PluginHealth
-from bamy.db.session import session_scope
+from bamy.db.session import engine as db_engine, session_scope
 from bamy.extensions.base import ALLOW, StateStore, _Decision
 from bamy.extensions.registry import registry
 from bamy.services import system_config
@@ -330,38 +332,80 @@ class PluginHub:
         threshold = int(system_config.get("plugin.auto_disable_threshold", 10))
         auto_disabled = False
         async with session_scope() as db:
+            dialect = db_engine.dialect.name
+            insert_fn = sqlite_insert if dialect == "sqlite" else postgresql_insert if dialect == "postgresql" else None
+            if insert_fn is None:
+                raise RuntimeError(f"不支持插件健康统计的数据库方言：{dialect}")
             for binding_id in (b.id, None):
-                stmt = select(PluginHealth).where(PluginHealth.plugin_id == b.plugin_id)
-                stmt = stmt.where(PluginHealth.binding_id == binding_id) if binding_id else stmt.where(PluginHealth.binding_id.is_(None))
-                row = (await db.execute(stmt)).scalar_one_or_none()
-                if row is None:
-                    row = PluginHealth(plugin_id=b.plugin_id, binding_id=binding_id, invoke_count=0,
-                                       error_count=0, consecutive_errors=0)
-                    db.add(row)
-                    try:
-                        await db.flush()
-                    except IntegrityError:
-                        await db.rollback()
-                        row = (await db.execute(stmt)).scalar_one()
-                n = (row.invoke_count or 0) + 1
-                row.invoke_count = n
-                if kind == "event":
-                    row.event_calls = (row.event_calls or 0) + 1
+                now = datetime.utcnow()
+                is_error = int(bool(error))
+                is_event = int(kind == "event")
+                is_checkpoint = int(kind != "event")
+                values = {
+                    "plugin_id": b.plugin_id,
+                    "binding_id": binding_id,
+                    "invoke_count": 1,
+                    "error_count": is_error,
+                    "consecutive_errors": is_error,
+                    "event_calls": is_event,
+                    "checkpoint_calls": is_checkpoint,
+                    "timeout_count": int(timeout),
+                    "avg_cost_ms": cost_ms if is_checkpoint else None,
+                    "last_error": error[:2000] if error else None,
+                    "last_error_at": now if error else None,
+                    "updated_at": now,
+                }
+                insert = insert_fn(PluginHealth).values(**values)
+                if binding_id is not None:
+                    insert = insert.on_conflict_do_update(
+                        index_elements=[PluginHealth.plugin_id, PluginHealth.binding_id],
+                        index_where=PluginHealth.binding_id.is_not(None),
+                        set_={
+                            "invoke_count": PluginHealth.invoke_count + 1,
+                            "error_count": PluginHealth.error_count + is_error,
+                            "consecutive_errors": PluginHealth.consecutive_errors + 1 if is_error else 0,
+                            "event_calls": PluginHealth.event_calls + is_event,
+                            "checkpoint_calls": PluginHealth.checkpoint_calls + is_checkpoint,
+                            "avg_cost_ms": case(
+                                (is_checkpoint == 1,
+                                 (PluginHealth.avg_cost_ms * PluginHealth.checkpoint_calls + cost_ms) /
+                                 (PluginHealth.checkpoint_calls + 1)),
+                                else_=PluginHealth.avg_cost_ms,
+                            ),
+                            "timeout_count": PluginHealth.timeout_count + int(timeout),
+                            "last_error": values["last_error"] if is_error else PluginHealth.last_error,
+                            "last_error_at": values["last_error_at"] if is_error else PluginHealth.last_error_at,
+                            "updated_at": now,
+                        },
+                    )
                 else:
-                    cp = (row.checkpoint_calls or 0) + 1
-                    row.checkpoint_calls = cp
-                    row.avg_cost_ms = int(((row.avg_cost_ms or 0) * (cp - 1) + cost_ms) / cp)
-                if timeout:
-                    row.timeout_count = (row.timeout_count or 0) + 1
-                if error:
-                    row.error_count = (row.error_count or 0) + 1
-                    row.consecutive_errors = (row.consecutive_errors or 0) + 1
-                    row.last_error = error[:2000]
-                    row.last_error_at = datetime.utcnow()
-                    if binding_id and row.consecutive_errors >= threshold:
+                    insert = insert.on_conflict_do_update(
+                        index_elements=[PluginHealth.plugin_id],
+                        index_where=PluginHealth.binding_id.is_(None),
+                        set_={
+                            "invoke_count": PluginHealth.invoke_count + 1,
+                            "error_count": PluginHealth.error_count + is_error,
+                            "consecutive_errors": PluginHealth.consecutive_errors + 1 if is_error else 0,
+                            "event_calls": PluginHealth.event_calls + is_event,
+                            "checkpoint_calls": PluginHealth.checkpoint_calls + is_checkpoint,
+                            "avg_cost_ms": case(
+                                (is_checkpoint == 1,
+                                 (PluginHealth.avg_cost_ms * PluginHealth.checkpoint_calls + cost_ms) /
+                                 (PluginHealth.checkpoint_calls + 1)),
+                                else_=PluginHealth.avg_cost_ms,
+                            ),
+                            "timeout_count": PluginHealth.timeout_count + int(timeout),
+                            "last_error": values["last_error"] if is_error else PluginHealth.last_error,
+                            "last_error_at": values["last_error_at"] if is_error else PluginHealth.last_error_at,
+                            "updated_at": now,
+                        },
+                    )
+                await db.execute(insert)
+                if binding_id is not None and is_error:
+                    consecutive = await db.scalar(select(PluginHealth.consecutive_errors).where(
+                        PluginHealth.plugin_id == b.plugin_id, PluginHealth.binding_id == binding_id))
+                    if consecutive is not None and consecutive >= threshold:
                         auto_disabled = True
-                else:
-                    row.consecutive_errors = 0
             if auto_disabled:
                 binding = await db.get(PluginBinding, b.id)
                 if binding is not None and binding.status == "enabled":

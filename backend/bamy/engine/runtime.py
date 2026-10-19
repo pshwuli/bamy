@@ -886,23 +886,16 @@ class Engine:
 
     async def _apply_result_locked(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
         """按单调状态和成交量收敛并发返回、用户流和对账事件。"""
+        handled = await self._apply_terminal(order_id, result)
+        if handled is not None:
+            return handled
         async with session_scope() as db:
             o = await db.get(Order, order_id)
             before = o.status
-            terminal = {"filled", "canceled", "rejected", "failed"}
             rank = {"pending": 0, "submitting": 1, "submitted": 2, "partial": 3,
                     "canceling": 3, "unknown": 1, "filled": 4, "canceled": 4, "rejected": 4, "failed": 4}
             incoming = result.status if result.status in rank else "unknown"
             incoming_filled = min(max(Decimal(0), Decimal(str(result.filled_amount or 0))), o.amount)
-            if before in terminal and (before == "filled" or incoming != "filled"):
-                o.filled_amount = max(o.filled_amount or Decimal(0), incoming_filled)
-                if result.filled_price and incoming_filled >= (o.filled_amount or Decimal(0)):
-                    o.filled_price = Decimal(str(result.filled_price))
-                if result.raw is not None:
-                    o.raw_response = json.dumps(result.raw, default=str)[:20000]
-                await db.commit()
-                await db.refresh(o)
-                return _view(o)
             if rank[incoming] < rank.get(before, -1) and incoming not in {"unknown", "failed"}:
                 return _view(o)
             if result.exchange_order_id:
@@ -946,6 +939,45 @@ class Engine:
                 await self.push("order.rejected", _event(o))
             await self._notify_strategy(o)
         return _view(o)
+
+    async def _apply_terminal(self, order_id: int, result: ExchangeOrder) -> OrderView | None:
+        """订单已是终态时的收敛：只接受更大的累计成交量；补满则升级为 filled 并补发成交事件。
+
+        返回 None 表示订单不是终态（或 filled 订单收到非 filled 以外的合法迁移），交给主路径。
+        """
+        async with session_scope() as db:
+            o = await db.get(Order, order_id)
+            before = o.status
+            if before not in {"filled", "canceled", "rejected", "failed"}:
+                return None
+            if before != "filled" and result.status == "filled":
+                return None       # 终态后收到完整成交：走主路径按 filled 落库
+            incoming_filled = min(max(Decimal(0), Decimal(str(result.filled_amount or 0))), o.amount)
+            upgraded = False
+            if incoming_filled > (o.filled_amount or Decimal(0)):
+                o.filled_amount = incoming_filled
+                if result.filled_price:
+                    o.filled_price = Decimal(str(result.filled_price))
+                if before != "filled" and o.amount > 0 and incoming_filled >= o.amount:
+                    o.status = "filled"
+                    o.filled_at = o.filled_at or datetime.utcnow()
+                    upgraded = True
+            if result.raw is not None:
+                o.raw_response = json.dumps(result.raw, default=str)[:20000]
+            await db.commit()
+            await db.refresh(o)
+            if upgraded:
+                rules = (await db.execute(select(RiskRule).where(RiskRule.enabled.is_(True)))).scalars().all()
+                inst = await db.get(Instance, o.instance_id)
+                risk_engine.after_fill(inst, list(rules), o.symbol)
+            view, event = _view(o), _event(o)
+            position = {"instance_id": o.instance_id, "owner_id": o.owner_id,
+                        "account_id": o.account_id, "symbol": o.symbol}
+        if upgraded:
+            await self.push("order.filled", event)
+            await self.push("position.changed", position)
+            await self._notify_strategy(o)
+        return view
 
     async def _notify_strategy(self, o: Order) -> None:
         run = self.running.get(o.instance_id)
