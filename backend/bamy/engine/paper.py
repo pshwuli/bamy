@@ -74,7 +74,8 @@ class PaperBook:
                 **{k: {"free": float(v), "used": 0.0, "total": float(v)} for k, v in self.positions.items()}}
 
     def fill(self, client_order_id: str, symbol: str, side: str, amount: float, price: float,
-             *, apply_slippage: bool = True, maker: bool = False, reduce_only: bool = False) -> ExchangeOrder:
+             *, apply_slippage: bool = True, maker: bool = False, reduce_only: bool = False,
+             position_side: str | None = None) -> ExchangeOrder:
         amt = _D(amount)
         px = _D(price)
         if apply_slippage:
@@ -189,24 +190,43 @@ MAKER_FEE = 0.0002              # 币安 U 本位默认挂单费率
 TAKER_FEE = 0.0005              # 币安 U 本位默认吃单费率
 
 
-class FuturesBook:
-    """U 本位永续合约模拟账户：单向持仓（每个交易对一个净仓位）、逐仓、按标记价算浮盈、到强平价自动平仓。
+def _position_key(symbol: str, position_side: str) -> str:
+    if position_side not in {"long", "short"}:
+        raise ValueError("position_side 必须是 long 或 short")
+    return f"{symbol}|{position_side}"
 
-    positions: {symbol: {"side": long|short, "amount", "entry", "margin", "leverage"}}
-    balance 是可用余额（不含已占用保证金）；权益 = 可用余额 + Σ(保证金 + 浮盈)。
-    资金费率暂不计算。
+
+class FuturesBook:
+    """U 本位永续合约模拟账户，按 ``symbol|position_side`` 保存独立仓位。
+
+    positions 的复合键让同一交易对可以同时持有 long 和 short。旧版按 symbol
+    保存的净仓位仍可加载；缺少 side 的旧数据沿用记录中的 side，不虚构另一边。
     """
 
     def __init__(self, balance: Decimal, positions: dict[str, dict[str, Any]], realized_pnl: Decimal,
                  config: PaperConfig) -> None:
         self.balance = _D(balance)
         self.positions: dict[str, dict[str, Any]] = {
-            k: {"side": v["side"], "amount": _D(v["amount"]), "entry": _D(v["entry"]), "margin": _D(v["margin"]),
-                "leverage": int(v.get("leverage") or 1)} for k, v in positions.items()}
-        self.avg_price: dict[str, Decimal] = {}
+            _position_key(v.get("symbol") or k.split("|", 1)[0], v.get("side", "long")): {
+                "side": v.get("side", "long"), "symbol": v.get("symbol") or k.split("|", 1)[0],
+                "amount": _D(v["amount"]), "entry": _D(v["entry"]), "margin": _D(v["margin"]),
+                "leverage": int(v.get("leverage") or 1),
+            } for k, v in positions.items() if isinstance(v, dict) and float(v.get("amount") or 0) > 0
+        }
         self.realized_pnl = _D(realized_pnl)
         self.config = config
         self.open_orders: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def key(symbol: str, position_side: str) -> str:
+        return _position_key(symbol, position_side)
+
+    def _position(self, symbol: str, position_side: str | None = None, *, side: str | None = None) -> tuple[str, dict[str, Any] | None]:
+        target = position_side or ("long" if side == "buy" else "short" if side == "sell" else None)
+        if target not in {"long", "short"}:
+            return symbol, None
+        key = self.key(symbol, target)
+        return key, self.positions.get(key)
 
     # ---- 工具 ----
     @staticmethod
@@ -215,21 +235,32 @@ class FuturesBook:
         return entry * (1 - inv + MMR) if side == "long" else entry * (1 + inv - MMR)
 
     def price_keys(self) -> dict[str, str]:
-        return {sym: sym for sym in self.positions}
+        return {key: p["symbol"] for key, p in self.positions.items()}
 
     def held_text(self) -> str:
-        return "、".join(f"{k} {'多' if p['side'] == 'long' else '空'} {float(p['amount']):g}"
-                        for k, p in self.positions.items()) or "空仓"
+        return "、".join(f"{p['symbol']} {'多' if p['side'] == 'long' else '空'} {float(p['amount']):g}"
+                        for p in self.positions.values()) or "空仓"
 
-    def is_reducing(self, symbol: str, side: str) -> bool:
-        p = self.positions.get(symbol)
-        return bool(p) and ((p["side"] == "long" and side == "sell") or (p["side"] == "short" and side == "buy"))
+    def is_reducing(self, symbol: str, side: str, position_side: str | None = None) -> bool:
+        # With an explicit hedge side, the opposite order side closes that leg;
+        # without one, retain the legacy inference for one-way callers.
+        target = position_side or ("long" if side == "sell" else "short")
+        closing_direction = ((target == "long" and side == "sell") or
+                             (target == "short" and side == "buy"))
+        _, p = self._position(symbol, target)
+        return closing_direction and bool(p and p["amount"] > 0)
 
-    def precheck(self, symbol: str, side: str, amount: float, price: float, *, reduce_only: bool = False) -> int | None:
-        p = self.positions.get(symbol)
-        closing = min(float(p["amount"]), amount) if self.is_reducing(symbol, side) else 0.0
+    def precheck(self, symbol: str, side: str, amount: float, price: float, *, reduce_only: bool = False,
+                 position_side: str | None = None) -> int | None:
+        target = position_side or ("long" if side == "sell" else "short")
+        _, p = self._position(symbol, target)
+        closing_direction = ((target == "long" and side == "sell") or
+                             (target == "short" and side == "buy"))
+        closing = min(float(p["amount"]), amount) if p and closing_direction else 0.0
         if reduce_only:
             return None if closing > 0 else 42244
+        if position_side is not None and closing_direction and not p:
+            return 42244
         opening = amount - closing
         if opening <= 0:
             return None
@@ -239,7 +270,8 @@ class FuturesBook:
 
     # ---- 成交 ----
     def fill(self, client_order_id: str, symbol: str, side: str, amount: float, price: float,
-             *, apply_slippage: bool = True, maker: bool = False, reduce_only: bool = False) -> ExchangeOrder:
+             *, apply_slippage: bool = True, maker: bool = False, reduce_only: bool = False,
+             position_side: str | None = None) -> ExchangeOrder:
         amt = _D(amount)
         px = _D(price)
         if apply_slippage:
@@ -247,8 +279,11 @@ class FuturesBook:
             px = px * (1 + slip) if side == "buy" else px * (1 - slip)
         fee_rate = _D(MAKER_FEE if maker else TAKER_FEE)
         total_fee = Decimal(0)
-        p = self.positions.get(symbol)
-        if self.is_reducing(symbol, side):
+        target = position_side or ("long" if side == "sell" else "short")
+        close_key, p = self._position(symbol, target)
+        closing_direction = ((target == "long" and side == "sell") or
+                             (target == "short" and side == "buy"))
+        if p and closing_direction and (reduce_only or position_side is None):
             qty = min(amt, p["amount"])
             sign = 1 if p["side"] == "long" else -1
             pnl = (px - p["entry"]) * qty * sign
@@ -260,7 +295,7 @@ class FuturesBook:
             p["margin"] -= released
             p["amount"] -= qty
             if p["amount"] <= 0:
-                self.positions.pop(symbol, None)
+                self.positions.pop(close_key, None)
             amt -= qty
         elif reduce_only:
             raise ExchangeError("没有可平的反向持仓（reduce_only）", 42244, rejected=True)
@@ -274,9 +309,10 @@ class FuturesBook:
             self.realized_pnl -= fee
             total_fee += fee
             new_side = "long" if side == "buy" else "short"
-            cur = self.positions.get(symbol)
+            open_key = self.key(symbol, new_side)
+            cur = self.positions.get(open_key)
             if cur is None:
-                self.positions[symbol] = {"side": new_side, "amount": amt, "entry": px, "margin": margin, "leverage": lev}
+                self.positions[open_key] = {"symbol": symbol, "side": new_side, "amount": amt, "entry": px, "margin": margin, "leverage": lev}
             else:   # 同向加仓：均价加权，保证金累加
                 total = cur["amount"] + amt
                 cur["entry"] = (cur["entry"] * cur["amount"] + px * amt) / total
@@ -287,12 +323,12 @@ class FuturesBook:
                              raw={"paper": True, "futures": True}, client_order_id=client_order_id)
 
     def place_limit(self, client_order_id: str, symbol: str, side: str, amount: float, price: float,
-                    *, reduce_only: bool = False) -> ExchangeOrder:
-        code = self.precheck(symbol, side, amount, price, reduce_only=reduce_only)
+                    *, reduce_only: bool = False, position_side: str | None = None) -> ExchangeOrder:
+        code = self.precheck(symbol, side, amount, price, reduce_only=reduce_only, position_side=position_side)
         if code:
             raise ExchangeError("模拟合约账户可用保证金不足" if code == 42261 else "没有可平的持仓", code, rejected=True)
         self.open_orders[client_order_id] = {"symbol": symbol, "side": side, "amount": amount, "price": price,
-                                             "reduce_only": reduce_only}
+                                             "reduce_only": reduce_only, "position_side": position_side}
         return ExchangeOrder(exchange_order_id=f"paper-{client_order_id}", status="submitted",
                              filled_amount=0.0, filled_price=None, raw={"paper": True, "futures": True},
                              client_order_id=client_order_id)
@@ -306,7 +342,7 @@ class FuturesBook:
                 continue
             try:
                 result = self.fill(cid, symbol, o["side"], o["amount"], o["price"], apply_slippage=False, maker=True,
-                                   reduce_only=bool(o.get("reduce_only")))
+                                   reduce_only=bool(o.get("reduce_only")), position_side=o.get("position_side"))
             except ExchangeError as exc:
                 result = ExchangeOrder(f"paper-{cid}", "rejected", 0.0, None, raw={"error": str(exc)}, client_order_id=cid)
             self.open_orders.pop(cid, None)
@@ -320,20 +356,22 @@ class FuturesBook:
         """标记价穿过强平价的仓位按强平价平掉，逐仓只亏掉该仓保证金。返回被强平的仓位。"""
         out = []
         for sym, p in list(self.positions.items()):
-            px = prices.get(sym)
+            symbol = p["symbol"]
+            px = prices.get(symbol)
             if px is None:
                 continue
             liq = self.liq_price(p["side"], p["entry"], p["leverage"])
             if (p["side"] == "long" and _D(px) <= liq) or (p["side"] == "short" and _D(px) >= liq):
                 self.realized_pnl -= p["margin"]
                 self.positions.pop(sym, None)
-                out.append({"symbol": sym, "side": p["side"], "amount": float(p["amount"]), "price": float(liq),
+                out.append({"symbol": symbol, "side": p["side"], "amount": float(p["amount"]), "price": float(liq),
                             "loss": float(p["margin"])})
         return out
 
     # ---- 估值 ----
     def _upnl(self, sym: str, p: dict[str, Any], prices: dict[str, float]) -> Decimal:
-        px = _D(prices.get(sym, p["entry"]))
+        symbol = p["symbol"]
+        px = _D(prices.get(symbol, p["entry"]))
         return (px - p["entry"]) * p["amount"] * (1 if p["side"] == "long" else -1)
 
     def equity(self, prices: dict[str, float]) -> Decimal:
@@ -344,12 +382,13 @@ class FuturesBook:
 
     def positions_list(self, prices: dict[str, float], quote: str = "USDT") -> list[dict[str, Any]]:
         out = []
-        for sym, p in self.positions.items():
+        for key, p in self.positions.items():
+            sym = p["symbol"]
             entry = float(p["entry"])
             mark = float(prices.get(sym, entry))
-            pnl = float(self._upnl(sym, p, prices))
+            pnl = float(self._upnl(key, p, prices))
             margin = float(p["margin"])
-            out.append({"id": sym, "symbol": sym, "side": p["side"], "amount": float(p["amount"]),
+            out.append({"id": key, "symbol": sym, "side": p["side"], "position_side": p["side"], "amount": float(p["amount"]),
                         "entry_price": entry, "mark_price": mark, "unrealized_pnl": pnl,
                         "unrealized_pnl_pct": pnl / margin * 100 if margin else 0.0,   # 合约按保证金算收益率
                         "leverage": p["leverage"], "margin": margin,
@@ -363,7 +402,7 @@ class FuturesBook:
         return {"USDT": {"free": free, "used": used, "total": free + used}}
 
     def dump_positions(self) -> str:
-        return json.dumps({k: {"side": p["side"], "amount": str(p["amount"]), "entry": str(p["entry"]),
+        return json.dumps({k: {"symbol": p["symbol"], "side": p["side"], "amount": str(p["amount"]), "entry": str(p["entry"]),
                                "margin": str(p["margin"]), "leverage": p["leverage"]} for k, p in self.positions.items()})
 
     def dump_avg(self) -> str:
@@ -374,7 +413,18 @@ def load_futures_positions(raw: str | None) -> dict[str, dict[str, Any]]:
     if not raw:
         return {}
     data = json.loads(raw)
-    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        side = value.get("side")
+        symbol = value.get("symbol") or key.split("|", 1)[0]
+        if side not in {"long", "short"}:
+            side = "long"
+        out[_position_key(symbol, side)] = value | {"symbol": symbol, "side": side}
+    return out
 
 
 def is_futures_symbol(symbol: str) -> bool:

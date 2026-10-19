@@ -39,7 +39,7 @@ async def live_pnl(db: AsyncSession, inst: Instance) -> dict[str, Any]:
     rows = (await db.execute(select(Order).where(Order.instance_id == inst.id, Order.status.in_(("filled", "partial")))
                              .order_by(Order.id))).scalars().all()
     futures = inst.market_type == "futures"
-    pos: dict[str, list[float]] = {}          # symbol -> [净数量（多为正、空为负）, 均价]
+    pos: dict[tuple[str, str], list[float]] = {}  # (symbol, position_side) -> [signed quantity, average]
     realized, fees, fee_other = 0.0, 0.0, False
     for o in rows:
         qty = float(o.filled_amount or 0)
@@ -51,7 +51,12 @@ async def live_pnl(db: AsyncSession, inst: Instance) -> dict[str, Any]:
             fees += float(o.fee or 0)
         elif float(o.fee or 0) > 0:
             fee_other = True
-        net, avg = pos.get(o.symbol, [0.0, 0.0])
+        position_side = o.position_side if futures else "long"
+        if position_side not in {"long", "short"}:
+            # 老订单没有方向时，只能按单向模式的买卖净额兼容。
+            position_side = "long" if o.side == "buy" else "short"
+        key = (o.symbol, position_side)
+        net, avg = pos.get(key, [0.0, 0.0])
         signed = qty if o.side == "buy" else -qty
         if net == 0 or (net > 0) == (signed > 0):
             total = abs(net) + qty
@@ -67,9 +72,9 @@ async def live_pnl(db: AsyncSession, inst: Instance) -> dict[str, Any]:
                 avg = px
         if not futures and net < 0:               # 现货不会有净空（多卖的是账号里原本就有的币），不计
             net, avg = 0.0, 0.0
-        pos[o.symbol] = [net, avg]
+        pos[key] = [net, avg]
     unrealized = 0.0
-    for sym, (net, avg) in pos.items():
+    for (sym, position_side), (net, avg) in pos.items():
         if abs(net) < 1e-12:
             continue
         tick = market.cached(sym)

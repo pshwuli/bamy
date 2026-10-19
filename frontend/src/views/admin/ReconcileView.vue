@@ -60,6 +60,7 @@ async function submitTrigger() {
 }
 
 const resolving = ref<number | null>(null)
+
 async function resolve(row: Row) {
   const note = await promptText(t('reconcile.noteOptional'), t('reconcile.resolve'), false)
   if (note === null) return

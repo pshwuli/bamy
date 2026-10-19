@@ -11,7 +11,9 @@ export default {
       noteOptional: '处理说明（可选）',
       typeLabelOrder: '订单',
       typeLabelPosition: '持仓',
-      typeLabelBalance: '余额',
+      autoFix: '自动修正',
+      autoFixConfirm: '将以交易所实际持仓更新本地数据。请输入确认说明后继续。',
+      autoFixed: '对账差异已自动修正',
     },
     breaker: {
       statusFilter: '状态',
@@ -80,7 +82,9 @@ export default {
       noteOptional: 'Note (optional)',
       typeLabelOrder: 'Order',
       typeLabelPosition: 'Position',
-      typeLabelBalance: 'Balance',
+      autoFix: 'Auto-fix',
+      autoFixConfirm: 'Local data will be updated from the exchange position. Enter a confirmation note to continue.',
+      autoFixed: 'Reconciliation difference auto-fixed',
     },
     breaker: {
       statusFilter: 'Status',

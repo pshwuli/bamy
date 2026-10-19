@@ -127,6 +127,7 @@ export const P = {
     reconcileDiffs: '/api/admin/reconcile/diffs',
     reconcileDiff: (id: Id) => `/api/admin/reconcile/diffs/${e(id)}`,
     reconcileResolve: (id: Id) => `/api/admin/reconcile/diffs/${e(id)}/resolve`,
+    reconcileAutoFix: (id: Id) => `/api/admin/reconcile/diffs/${e(id)}/auto_fix`,
     circuitBreakers: '/api/admin/circuit-breakers',
     circuitBreaker: (id: Id) => `/api/admin/circuit-breakers/${e(id)}`,
     circuitRecover: (id: Id) => `/api/admin/circuit-breakers/${e(id)}/recover`,

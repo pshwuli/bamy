@@ -233,13 +233,11 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
         if not self.readonly and not can_trade:
             raise ExchangeError("该密钥没有 U 本位合约交易权限", 42211)
 
-        # 查询持仓模式（单向/双向）
-        position_mode = None
         try:
             pm = await self.client.fapiPrivateGetPositionSideDual()
             position_mode = "hedge" if pm.get("dualSidePosition") else "oneway"
-        except Exception:  # noqa: BLE001
-            pass  # 查询失败不影响验证，下单时会再处理
+        except Exception as exc:  # noqa: BLE001
+            raise ExchangeError(f"无法确认合约持仓模式：{exc}", 50201) from exc
 
         return {"can_trade": can_trade, "can_withdraw": bool(account.get("canWithdraw")), "position_mode": position_mode}
 
@@ -274,21 +272,19 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
     async def create_order(self, symbol: str, side: str, amount: float, price: float | None,
                            type_: str = "market", client_order_id: str | None = None,
                            stop_price: float | None = None, reduce_only: bool = False,
-                           position_mode: str | None = None) -> ExchangeOrder:
+                           position_mode: str | None = None, position_side: str | None = None) -> ExchangeOrder:
         params: dict[str, Any] = {"newClientOrderId": client_order_id} if client_order_id else {}
 
-        # hedge 模式：必须指定 positionSide
+        if position_mode not in {"oneway", "hedge"}:
+            raise ExchangeError("无法确认账号合约持仓模式，禁止下单", 42224, rejected=True)
         if position_mode == "hedge":
-            # 开多 → LONG，开空 → SHORT
-            # 平仓也带 positionSide，但【不加】reduceOnly（hedge 模式的平仓规则）
-            if reduce_only:
-                # 平仓：根据 side 反向确定 positionSide（buy 平空 → SHORT，sell 平多 → LONG）
-                params["positionSide"] = "SHORT" if side == "buy" else "LONG"
-            else:
-                # 开仓：buy → LONG，sell → SHORT
-                params["positionSide"] = "LONG" if side == "buy" else "SHORT"
-        elif reduce_only:
-            # 单向模式平仓：加 reduceOnly，不传 positionSide
+            target = position_side
+            if target not in {"long", "short"}:
+                raise ExchangeError("双向持仓下单必须指定 position_side", 42224, rejected=True)
+            params["positionSide"] = target.upper()
+        elif position_side is not None:
+            raise ExchangeError("单向持仓不接受 position_side", 42224, rejected=True)
+        if reduce_only and position_mode != "hedge":
             params["reduceOnly"] = True
 
         otype = type_
@@ -345,7 +341,9 @@ STATUS_MAP = {
 
 
 def _parse_order(raw: dict[str, Any], client_order_id: str | None) -> ExchangeOrder:
-    status = STATUS_MAP.get(str(raw.get("status") or "").lower(), "submitted")
+    status = STATUS_MAP.get(str(raw.get("status") or "").lower())
+    if status is None:
+        status = "unknown"
     return ExchangeOrder(
         exchange_order_id=str(raw.get("id")) if raw.get("id") is not None else None,
         status=status,

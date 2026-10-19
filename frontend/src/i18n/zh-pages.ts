@@ -520,7 +520,9 @@ export default {
     resolved: '是否解决',
     resolve: '标记已解决',
     resolveNote: '处理说明',
-    triggered: '对账任务已提交',
+    autoFix: '自动修正',
+    autoFixConfirm: '将以交易所实际持仓更新本地数据。请输入确认说明后继续。',
+    autoFixed: '对账差异已自动修正',
   },
   breaker: {
     title: '熔断',

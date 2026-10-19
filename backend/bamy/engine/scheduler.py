@@ -146,18 +146,17 @@ class Scheduler:
             await db.execute(delete(AccountHealth).where(AccountHealth.checked_at < cutoff))
 
             # 补充快照清理（PaperSnapshot）
-            from backend.bamy.db.models import PaperSnapshot
-            await db.execute(delete(PaperSnapshot).where(PaperSnapshot.created_at < cutoff))
+            from bamy.db.models import PaperSnapshot
+            await db.execute(delete(PaperSnapshot).where(PaperSnapshot.snapshot_at < cutoff))
 
-            # 清理已解决的对账差异（超过 30 天）
-            from backend.bamy.db.models import ReconcileDiff
+            from bamy.db.models import ReconcileDiff
             await db.execute(delete(ReconcileDiff).where(
                 ReconcileDiff.resolved == True,  # noqa: E712
                 ReconcileDiff.resolved_at < cutoff
             ))
 
             # 清理已关闭的熔断记录（超过 90 天）
-            from backend.bamy.db.models import CircuitBreaker
+            from bamy.db.models import CircuitBreaker
             cb_cutoff = datetime.utcnow() - timedelta(days=90)
             await db.execute(delete(CircuitBreaker).where(
                 CircuitBreaker.recovered_at.isnot(None),

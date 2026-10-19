@@ -107,6 +107,7 @@ export interface Position {
   id: string
   symbol: string
   side: string
+  position_side?: 'long' | 'short' | string | null
   amount: number
   entry_price?: number
   mark_price?: number
@@ -126,6 +127,7 @@ export interface Order {
   account_id?: number | null
   symbol: string
   side: 'buy' | 'sell' | string
+  position_side?: 'long' | 'short' | string | null
   type: string
   amount: number
   price?: number | null

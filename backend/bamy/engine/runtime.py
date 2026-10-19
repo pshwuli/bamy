@@ -606,12 +606,15 @@ class Engine:
                           type_: str = "market", *, source: str = "strategy", is_guard: bool = False,
                           guard_type: str | None = None, stop_price: float | None = None,
                           reduce_only: bool | None = None, client_order_id: str | None = None,
-                          actor_id: int | None = None, symbol: str | None = None) -> OrderView:
+                          actor_id: int | None = None, symbol: str | None = None,
+                          position_side: str | None = None) -> OrderView:
         instance_id = ctx.instance_id
         side = side.lower()
         symbol = _order_symbol(ctx, symbol)
         if side not in {"buy", "sell"}:
             raise ValueError("side 必须是 buy 或 sell")
+        if position_side is not None and (ctx.market_type != "futures" or position_side not in {"long", "short"}):
+            raise ApiError(40003, "position_side 仅支持合约的 long 或 short")
         if type_ not in {"market", "limit", "stop_market", "stop_limit", "take_profit", "trailing_stop"}:
             raise ValueError(f"不支持的订单类型 {type_}")
         cid = client_order_id or f"bamy{instance_id}x{uuid.uuid4().hex[:20]}"
@@ -623,7 +626,7 @@ class Engine:
             inst = await db.get(Instance, instance_id)
             order = Order(client_order_id=cid, instance_id=instance_id, owner_id=inst.owner_id,
                           account_id=inst.account_id, symbol=symbol, market_type=inst.market_type,
-                          side=side, type=type_, amount=Decimal(str(amount)),
+                          side=side, position_side=position_side, type=type_, amount=Decimal(str(amount)),
                           price=Decimal(str(price)) if price is not None else None,
                           stop_price=Decimal(str(stop_price)) if stop_price is not None else None,
                           status="pending", source=source, is_guard=is_guard, guard_type=guard_type)
@@ -631,18 +634,27 @@ class Engine:
             await db.commit()
             await db.refresh(order)
         await self.push("order.created", _event(order))
-        if reduce_only is None:
-            if inst.market_type == "futures":
+        if position_side is None:
+            if reduce_only is None:
+                if inst.market_type == "futures":
+                    book = self._live_book(instance_id)
+                    reduce_only = bool(book and book.is_reducing(symbol, side))
+                else:
+                    reduce_only = side == "sell"
+        elif inst.market_type == "futures" and reduce_only is None:
+            closing_direction = ((position_side == "long" and side == "sell") or
+                                 (position_side == "short" and side == "buy"))
+            if closing_direction:
                 book = self._live_book(instance_id)
-                reduce_only = bool(book and book.is_reducing(symbol, side))
+                reduce_only = bool(book and book.is_reducing(symbol, side, position_side))
             else:
-                reduce_only = side == "sell"
+                reduce_only = False
 
         # ---- 阶段 1：前置校验 ----
         try:
-            ref_price, amount, price = await self._precheck(instance_id, side, float(amount), price, type_, reduce_only,
+            ref_price, amount, price = await self._precheck(instance_id, side, float(amount), price, type_, bool(reduce_only),
                                                             allow_stopped=(guard_type == "force_close" and bool(reduce_only)),
-                                                            symbol=symbol)
+                                                            symbol=symbol, position_side=position_side)
         except (RiskRejected, ApiError, ExchangeError, ValueError) as exc:
             code = getattr(exc, "code", 42201)
             return await self._reject(order.id, str(getattr(exc, "message", exc)), code=code,
@@ -656,7 +668,8 @@ class Engine:
                                     "strategy_id": inst.strategy_id},
                        "order": {"client_order_id": cid, "source": source, "is_guard": is_guard},
                        "symbol": symbol, "side": side, "amount": amount, "price": price, "type": type_,
-                       "market_type": inst.market_type, "reduce_only": bool(reduce_only), "ref_price": ref_price}
+                       "market_type": inst.market_type, "reduce_only": bool(reduce_only), "position_side": position_side,
+                       "ref_price": ref_price}
         res = await plugin_hub.intercept("order.before_submit", payload, owner_id=inst.owner_id,
                                          account_id=inst.account_id)
         if not res.allowed:
@@ -683,8 +696,8 @@ class Engine:
         async with session_scope() as db:
             o = await db.get(Order, order.id)
             o.status = "submitting"
-            o.raw_request = json.dumps({"symbol": o.symbol, "side": side, "amount": amount, "price": price,
-                                        "type": type_, "stop_price": stop_price})
+            o.raw_request = json.dumps({"symbol": o.symbol, "side": side, "position_side": position_side,
+                                        "amount": amount, "price": price, "type": type_, "stop_price": stop_price})
             await db.commit()
         result: ExchangeOrder | None = None
         error: ExchangeError | None = None
@@ -693,10 +706,13 @@ class Engine:
             if inst.paper:
                 book = run.book if run and run.book else await self._get_book(instance_id)
                 if type_ == "market":
-                    result = book.fill(cid, symbol, side, amount, ref_price, reduce_only=bool(reduce_only) and inst.market_type == "futures")
+                    result = book.fill(cid, symbol, side, amount, ref_price,
+                                       reduce_only=bool(reduce_only) and inst.market_type == "futures",
+                                       position_side=position_side)
                 else:
                     result = book.place_limit(cid, symbol, side, amount, float(price or ref_price),
-                                              reduce_only=bool(reduce_only) and inst.market_type == "futures")
+                                              reduce_only=bool(reduce_only) and inst.market_type == "futures",
+                                              position_side=position_side)
                 async with session_scope() as db:
                     await self._save_book(db, instance_id, book)
                     await db.commit()
@@ -704,7 +720,7 @@ class Engine:
                     self._sync_extra_subs(run)
             else:
                 result = await self._send_live(inst, side, amount, price, type_, cid, stop_price, symbol=symbol,
-                                               reduce_only=bool(reduce_only))
+                                               reduce_only=bool(reduce_only), position_side=position_side)
         except ExchangeError as exc:
             error = exc
 
@@ -731,7 +747,7 @@ class Engine:
 
     async def _precheck(self, instance_id: int, side: str, amount: float, price: float | None, type_: str,
                         reduce_only: bool, *, allow_stopped: bool = False,
-                        symbol: str | None = None) -> tuple[float, float, float | None]:
+                        symbol: str | None = None, position_side: str | None = None) -> tuple[float, float, float | None]:
         run = self.running.get(instance_id)
         async with session_scope() as db:
             inst = await db.get(Instance, instance_id)
@@ -773,7 +789,8 @@ class Engine:
             # 余额
             if inst.paper:
                 book = run.book if run and run.book else await self._paper_book(db, inst)
-                code = book.precheck(symbol, side, amount, ref_price, reduce_only=reduce_only)
+                code = book.precheck(symbol, side, amount, ref_price, reduce_only=reduce_only,
+                                     position_side=position_side)
                 if code:
                     raise ApiError(code)
             elif inst.market_type == "futures":
@@ -795,16 +812,16 @@ class Engine:
 
     async def _send_live(self, inst: Instance, side: str, amount: float, price: float | None, type_: str,
                          cid: str, stop_price: float | None, *, symbol: str | None = None,
-                         reduce_only: bool = False) -> ExchangeOrder:
+                         reduce_only: bool = False, position_side: str | None = None) -> ExchangeOrder:
         symbol = symbol or inst.symbol
         async with session_scope() as db:
             account = await db.get(Account, inst.account_id)
         client = await pool.get(account)
-        extra = {}
+        extra: dict[str, Any] = {}
         if inst.market_type == "futures":
             extra["reduce_only"] = reduce_only
-            # 传入持仓模式供下单方法使用
             extra["position_mode"] = account.position_mode
+            extra["position_side"] = position_side
         delays = [2, 5, 5]
         for attempt in range(len(delays) + 1):
             try:
@@ -849,18 +866,29 @@ class Engine:
         return view
 
     async def _apply_result(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
-        """把交易所/撮合结果写回本地，发订单事件，回调策略 on_order。"""
+        """按单调状态和成交量收敛并发返回、用户流和对账事件。"""
         async with session_scope() as db:
             o = await db.get(Order, order_id)
             before = o.status
+            terminal = {"filled", "canceled", "rejected", "failed"}
+            rank = {"pending": 0, "submitting": 1, "submitted": 2, "partial": 3,
+                    "canceling": 3, "unknown": 1, "filled": 4, "canceled": 4, "rejected": 4, "failed": 4}
+            incoming = result.status
+            if before in terminal and incoming not in terminal:
+                return _view(o)
+            if before == "filled" and incoming != "filled":
+                return _view(o)
+            if rank.get(incoming, -1) < rank.get(before, -1) and incoming not in {"unknown", "failed"}:
+                return _view(o)
             if result.exchange_order_id:
                 o.exchange_order_id = result.exchange_order_id
             if submitted and o.submitted_at is None:
                 o.submitted_at = datetime.utcnow()
-            o.filled_amount = Decimal(str(result.filled_amount or 0))
+            o.filled_amount = max(o.filled_amount or Decimal(0), Decimal(str(result.filled_amount or 0)))
             if result.filled_price:
                 o.filled_price = Decimal(str(result.filled_price))
-            o.fee = Decimal(str(result.fee or 0))
+            if result.fee or result.fee_currency:
+                o.fee = max(o.fee or Decimal(0), Decimal(str(result.fee or 0)))
             if result.fee_currency:
                 o.fee_currency = result.fee_currency[:16]
             elif o.account_id is None and result.fee:
@@ -1028,12 +1056,17 @@ class Engine:
                 return book.positions_list(await self._prices(book), "USDT")
             rows = (await db.execute(select(Order).where(Order.instance_id == instance_id,
                                                          Order.status.in_(("filled", "partial"))))).scalars().all()
-        # 按交易对分别推算净持仓（扫描实例一个实例会有多个币）；合约允许净空
-        nets: dict[str, list[float]] = {}
+        # 实盘按交易对与仓位方向分别推算，避免 hedge 的多空互相抵消。
+        nets: dict[tuple[str, str], list[float]] = {}
+        futures = inst.market_type == "futures"
         for o in rows:
             qty = float(o.filled_amount or 0)
             px = float(o.filled_price or o.price or 0)
-            net, cost = nets.setdefault(o.symbol, [0.0, 0.0])
+            position_side = o.position_side if futures else "long"
+            if position_side not in {"long", "short"}:
+                position_side = "long" if o.side == "buy" else "short"
+            key = (o.symbol, position_side)
+            net, cost = nets.setdefault(key, [0.0, 0.0])
             signed = qty if o.side == "buy" else -qty
             if net == 0 or (net > 0) == (signed > 0):
                 net, cost = net + signed, cost + abs(signed) * px
@@ -1041,11 +1074,11 @@ class Engine:
                 closed = min(abs(signed), abs(net))
                 cost -= cost / abs(net) * closed
                 net += signed
-                if abs(net) > 1e-12 and (net > 0) == (signed > 0):   # 反手：剩余部分按本次价格开新仓
+                if abs(net) > 1e-12 and (net > 0) == (signed > 0):
                     cost = abs(net) * px
-            nets[o.symbol] = [net, cost]
+            nets[key] = [net, cost]
         out = []
-        for sym, (net, cost) in nets.items():
+        for (sym, position_side), (net, cost) in nets.items():
             if abs(net) <= 1e-12 or (inst.market_type != "futures" and net < 0):
                 continue
             qty = abs(net)
@@ -1056,7 +1089,8 @@ class Engine:
                 mark = avg
             side = "long" if net > 0 else "short"
             pnl = (mark - avg) * qty * (1 if side == "long" else -1)
-            out.append({"id": sym, "symbol": sym, "side": side, "amount": qty, "entry_price": avg,
+            out.append({"id": f"{sym}|{position_side}" if futures else sym, "symbol": sym, "side": side,
+                        "position_side": position_side if futures else None, "amount": qty, "entry_price": avg,
                         "mark_price": mark, "unrealized_pnl": pnl,
                         "unrealized_pnl_pct": pnl / (avg * qty) * 100 if avg else 0.0, "label": sym})
         return out
@@ -1071,7 +1105,9 @@ class Engine:
                     tick = await market.ticker(sym)
                 except Exception:  # noqa: BLE001
                     continue
-            out[key] = float(tick["price"])
+            price = float(tick["price"])
+            out[key] = price
+            out[sym] = price
         return out
 
     async def _before_close(self, ctx, position_id: str, amount: float | None, is_manual: bool) -> float | None:
@@ -1160,7 +1196,8 @@ class Engine:
             raise ApiError(42244)
         side = "sell" if pos.get("side", "long") == "long" else "buy"
         view = await self.place_order(ctx, side, qty, None, "market", source=source, reduce_only=True,
-                                      guard_type=guard_type, actor_id=actor_id, symbol=pos.get("symbol"))
+                                      guard_type=guard_type, actor_id=actor_id, symbol=pos.get("symbol"),
+                                      position_side=pos.get("position_side") or pos.get("side"))
         async with session_scope() as db:
             await write_audit(db, action="position.close", actor_id=actor_id, target_type="instance",
                               target_id=ctx.instance_id, new_value={"position_id": position_id, "amount": qty,
@@ -1226,8 +1263,10 @@ class Engine:
     async def set_position_mode(self, ctx, mode: str) -> None:
         if ctx.market_type != "futures":
             raise ApiError(42224, "现货不支持持仓模式")
-        if mode != "oneway":
-            raise ApiError(42224, "目前只支持单向持仓（oneway）")
+        if mode not in {"oneway", "hedge"}:
+            raise ApiError(42224, "持仓模式必须是 oneway 或 hedge")
+        if not ctx.paper:
+            raise ApiError(42224, "实盘持仓模式必须在交易所设置并重新验证账号")
 
     async def normalize_amount(self, ctx, amount: float, symbol: str) -> float:
         """把下单数量对齐到交易所精度（stepSize）与最小量。
@@ -1725,7 +1764,7 @@ def _has_own(obj: Any, method: str) -> bool:
 
 def _view(o: Order) -> OrderView:
     return OrderView(id=o.id, client_order_id=o.client_order_id, exchange_order_id=o.exchange_order_id,
-                     symbol=o.symbol, side=o.side, type=o.type, amount=float(o.amount),
+                     symbol=o.symbol, side=o.side, position_side=o.position_side, type=o.type, amount=float(o.amount),
                      price=_f(o.price), filled_amount=float(o.filled_amount or 0), filled_price=_f(o.filled_price),
                      status=o.status, reason=o.reason, source=o.source, is_guard=bool(o.is_guard))
 
@@ -1733,7 +1772,7 @@ def _view(o: Order) -> OrderView:
 def _event(o: Order) -> dict[str, Any]:
     return {"order_id": o.id, "client_order_id": o.client_order_id, "instance_id": o.instance_id,
             "owner_id": o.owner_id, "account_id": o.account_id, "symbol": o.symbol, "side": o.side,
-            "type": o.type, "amount": float(o.amount), "price": _f(o.price),
+            "position_side": o.position_side, "type": o.type, "amount": float(o.amount), "price": _f(o.price),
             "filled_amount": float(o.filled_amount or 0), "filled_price": _f(o.filled_price),
             "status": o.status, "source": o.source, "is_guard": bool(o.is_guard), "reason": o.reason}
 

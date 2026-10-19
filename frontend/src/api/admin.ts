@@ -116,6 +116,7 @@ export const adminApi = {
   reconcileDiffs: (q: Query) => http.get<Page<ReconcileDiff>>(P.admin.reconcileDiffs, q),
   reconcileDiff: (id: Id) => http.get<ReconcileDiff>(P.admin.reconcileDiff(id)),
   reconcileResolve: (id: Id, note?: string) => http.post<void>(P.admin.reconcileResolve(id), { note }),
+  reconcileAutoFix: (id: Id) => http.post<ReconcileDiff>(P.admin.reconcileAutoFix(id)),
   circuitBreakers: (q: Query) => http.get<Page<CircuitBreaker>>(P.admin.circuitBreakers, q),
   circuitBreaker: (id: Id) => http.get<CircuitBreaker>(P.admin.circuitBreaker(id)),
   triggerBreaker: (body: { level: string; target_id: number | null; reason: string }) =>

@@ -43,12 +43,16 @@ class StrategyContext:
     # symbol 不传 = 实例绑定的交易对；扫描实例必须传具体交易对。
     # 合约：buy 开多/平空，sell 开空/平多；reduce_only=True 只减仓不反手。
     async def buy(self, amount: float, price: float | None = None, type_: str = "market", *,
-                  symbol: str | None = None, reduce_only: bool | None = None) -> OrderView:
-        return await self._engine.place_order(self, "buy", amount, price, type_, symbol=symbol, reduce_only=reduce_only)
+                  symbol: str | None = None, reduce_only: bool | None = None,
+                  position_side: str | None = None) -> OrderView:
+        return await self._engine.place_order(self, "buy", amount, price, type_, symbol=symbol,
+                                              reduce_only=reduce_only, position_side=position_side)
 
     async def sell(self, amount: float, price: float | None = None, type_: str = "market", *,
-                   symbol: str | None = None, reduce_only: bool | None = None) -> OrderView:
-        return await self._engine.place_order(self, "sell", amount, price, type_, symbol=symbol, reduce_only=reduce_only)
+                   symbol: str | None = None, reduce_only: bool | None = None,
+                   position_side: str | None = None) -> OrderView:
+        return await self._engine.place_order(self, "sell", amount, price, type_, symbol=symbol,
+                                              reduce_only=reduce_only, position_side=position_side)
 
     async def cancel(self, order_id: str | int) -> Any:
         return await self._engine.cancel_order(self, order_id)
