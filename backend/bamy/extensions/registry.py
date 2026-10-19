@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import logging
 import shutil
 import sys
@@ -68,6 +69,11 @@ class Extension:
     @property
     def hooks(self) -> list[dict[str, Any]]:
         return [h for h in (self.meta.get("hooks") or []) if isinstance(h, dict)]
+
+    @property
+    def actions(self) -> list[dict[str, Any]]:
+        """插件声明的手动动作（如扫码绑定）：{id, label, handler}，由用户在设置页触发。"""
+        return [a for a in (self.meta.get("actions") or []) if isinstance(a, dict)]
 
     @property
     def network(self) -> dict[str, Any] | None:
@@ -203,6 +209,14 @@ class ExtensionRegistry:
             limit = int(settings.plugins.get("max_per_checkpoint", 16))
             if any(v > limit for v in per_cp.values()):
                 raise ValueError("单个检查点的拦截钩子超过上限")
+            action_ids: set[str] = set()
+            for action in ext.actions:
+                aid = str(action.get("id") or "")
+                if not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", aid) or aid in action_ids:
+                    raise ValueError(f"动作 id 非法或重复：{aid or '空'}")
+                if not action.get("handler") or not action.get("label"):
+                    raise ValueError(f"动作 {aid} 缺少 handler 或 label")
+                action_ids.add(aid)
 
     def _import_class(self, ext: Extension) -> type:
         module_name = f"bamy_ext_{ext.kind}_{ext.id}"
@@ -281,6 +295,9 @@ class ExtensionRegistry:
                     raise ValueError(f"未实现钩子处理函数 {handler_name}")
                 if hook.get("checkpoint") and getattr(ext.cls, handler_name, None) is getattr(BasePlugin, handler_name, None):
                     raise ValueError(f"钩子 {handler_name} 未实现")
+            for action in ext.actions:
+                if not callable(getattr(ext.cls, str(action["handler"]), None)):
+                    raise ValueError(f"未实现动作处理函数 {action['handler']}")
 
     # ---- 查询 ----
     def get_strategy(self, sid: str) -> Extension | None:

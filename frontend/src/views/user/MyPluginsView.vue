@@ -18,6 +18,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import PluginMeta from '@/components/PluginMeta.vue'
+import PluginActionButton from '@/components/PluginActionButton.vue'
 import BindingHealthDialog from '@/components/BindingHealthDialog.vue'
 
 type Row = Binding & {
@@ -131,6 +132,17 @@ async function openEdit(b: RowArg) {
     edit.value.open = false
   } finally {
     edit.value.loading = false
+  }
+}
+// 插件动作（如扫码绑定）完成后：服务端已写入设置，重新加载并刷新表单
+async function onActionDone() {
+  const e = edit.value
+  if (!e.row || !e.plugin) return
+  await load()
+  const fresh = rows.value.find((r) => r.id === e.row!.id)
+  if (fresh) {
+    e.row = fresh
+    e.values = mergeValues(e.plugin.settings_schema ?? [], fresh.settings ?? {})
   }
 }
 async function saveEdit() {
@@ -323,6 +335,9 @@ onMounted(load)
 
     <el-dialog v-model="edit.open" :title="edit.row ? t('extv.settingsTitle', { name: pluginName(edit.row.plugin_id, edit.row.plugin_name) }) : ''" width="640px" append-to-body :close-on-click-modal="false">
       <div v-loading="edit.loading">
+        <div v-if="edit.plugin?.actions?.length && edit.row" class="action-row">
+          <PluginActionButton v-for="a in edit.plugin.actions" :key="a.id" :binding-id="edit.row.id" :action="a" @done="onActionDone" />
+        </div>
         <SchemaForm v-if="edit.plugin" ref="formRef" v-model="edit.values" :schema="edit.plugin.settings_schema ?? []" keep-secret :external-errors="edit.extErrors" />
       </div>
       <template #footer>
@@ -363,6 +378,11 @@ onMounted(load)
 </template>
 
 <style scoped>
+.action-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 .table-wrap { overflow-x: auto; }
 .small { font-size: 12px; }
 .override { color: var(--el-color-warning-dark-2); }

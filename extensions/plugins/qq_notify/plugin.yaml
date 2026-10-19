@@ -1,12 +1,13 @@
 kind: plugin
 
 id: qq_notify
-name: QQ 群通知
-version: 1.0.0
+name: QQ 通知
+version: 1.1.0
 author: bamy
 description: >-
-  通过 QQ 官方机器人 API v2 把成交、出错、自动停止、风控触发（含合约强平）和系统告警推送到指定 QQ 群。
-  消息都以"BAMY"开头。QQ 平台对机器人主动消息有数量限制，请先用"每分钟最多推送"和"最低等级"控制推送量。
+  通过 QQ 官方机器人 API v2 把成交、出错、自动停止、风控触发（含合约强平）和系统告警推送到 QQ 私聊或群。
+  可在设置页点「扫码绑定」，用手机 QQ 扫码自动创建机器人并回填 AppID、AppSecret 和你的 openid。
+  消息都以"BAMY"开头。QQ 平台对机器人主动消息有数量限制，请用"每分钟最多推送"和"最低等级"控制推送量。
 tags: [notify]
 min_bamy_version: 1.0.0
 license: MIT
@@ -24,6 +25,7 @@ network:
   hosts:
     - bots.qq.com
     - api.sgroup.qq.com
+    - q.qq.com
   timeout_ms: 5000
 
 hooks:
@@ -38,28 +40,46 @@ hooks:
   - event: system.alert
     handler: on_alert
 
+actions:
+  - id: scan_bind
+    label: 扫码绑定
+    handler: action_scan_bind
+
 settings:
   - key: app_id
     label: AppID
     type: string
-    required: true
     max_length: 32
-    help: QQ 开放平台 → 机器人 → 开发设置里的 AppID
+    help: 点「扫码绑定」自动填写，也可以手动填 QQ 开放平台里的 AppID
     group: 机器人
 
   - key: app_secret
     label: AppSecret
     type: secret
-    required: true
-    help: 同一页面的 AppSecret（用于换取 access_token）
+    help: 扫码后自动填写，也可以手动填
+    group: 机器人
+
+  - key: target_type
+    label: 推送目标
+    type: select
+    default: c2c
+    options:
+      - { value: c2c, label: 私聊（扫码的人） }
+      - { value: group, label: 群 }
+    group: 机器人
+
+  - key: user_openid
+    label: 用户 openid
+    type: string
+    max_length: 64
+    help: 私聊目标。扫码绑定后自动填写
     group: 机器人
 
   - key: group_openid
     label: 群 openid
     type: string
-    required: true
     max_length: 64
-    help: 不是群号。把机器人拉进群并 @ 它一次，从事件推送里取 group_openid
+    help: 推送目标选"群"时填写。不是群号，把机器人拉进群并 @ 它一次，从事件推送里取 group_openid
     group: 机器人
 
   - key: sandbox
@@ -99,3 +119,4 @@ dependencies:
   python: ">=3.11"
   packages:
     - httpx>=0.25.0
+    - cryptography>=42.0.0

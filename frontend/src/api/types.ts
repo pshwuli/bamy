@@ -235,6 +235,7 @@ export interface Plugin {
   network_hosts?: string[]
   hooks?: PluginHook[]
   settings_schema?: SchemaField[]
+  actions?: { id: string; label: string }[]
   network?: { enabled: boolean; hosts: string[]; timeout_ms?: number }
   binding_count?: number
   bindings_by_scope?: Partial<Record<Scope, number>>

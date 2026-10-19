@@ -58,6 +58,7 @@ export const P = {
     list: '/api/plugin-bindings',
     one: (id: Id) => `/api/plugin-bindings/${e(id)}`,
     health: (id: Id) => `/api/plugin-bindings/${e(id)}/health`,
+    action: (id: Id, action: string) => `/api/plugin-bindings/${e(id)}/actions/${e(action)}`,
   },
 
   instances: {
@@ -123,6 +124,7 @@ export const P = {
     globalBindings: '/api/admin/plugin-bindings',
     allBindings: '/api/admin/plugin-bindings/all',
     binding: (id: Id) => `/api/admin/plugin-bindings/${e(id)}`,
+    bindingAction: (id: Id, action: string) => `/api/admin/plugin-bindings/${e(id)}/actions/${e(action)}`,
     reconcileTrigger: '/api/admin/reconcile/trigger',
     reconcileDiffs: '/api/admin/reconcile/diffs',
     reconcileDiff: (id: Id) => `/api/admin/reconcile/diffs/${e(id)}`,

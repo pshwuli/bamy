@@ -32,12 +32,16 @@ export const pluginsApi = {
   get: (id: Id) => http.get<Plugin>(P.plugins.one(id)),
 }
 
+export type ActionResult = Record<string, unknown> & { status?: string; qr_url?: string; interval?: number; settings_updated?: boolean }
+
 export const bindingsApi = {
   list: (q: Query) => http.get<Page<Binding>>(P.bindings.list, q),
   create: (body: BindingInput) => http.post<Binding>(P.bindings.list, body, { silent: true }),
   update: (id: Id, body: BindingPatch) => http.patch<Binding>(P.bindings.one(id), body, { silent: true }),
   remove: (id: Id) => http.delete<void>(P.bindings.one(id)),
   health: (id: Id) => http.get<BindingHealth>(P.bindings.health(id)),
+  runAction: (id: Id, action: string, payload: Record<string, unknown> = {}) =>
+    http.post<ActionResult>(P.bindings.action(id, action), { payload }, { silent: true }),
 }
 
 export const adminExtApi = {
@@ -53,6 +57,8 @@ export const adminExtApi = {
   allBindings: (q: Query) => http.get<Page<Binding>>(P.admin.allBindings, q),
   updateBinding: (id: Id, body: BindingPatch) => http.patch<Binding>(P.admin.binding(id), body, { silent: true }),
   removeBinding: (id: Id) => http.delete<void>(P.admin.binding(id)),
+  runBindingAction: (id: Id, action: string, payload: Record<string, unknown> = {}) =>
+    http.post<ActionResult>(P.admin.bindingAction(id, action), { payload }, { silent: true }),
 }
 
 export function itemsOf<T>(d: Page<T> | { items: T[] } | T[] | null | undefined): T[] {

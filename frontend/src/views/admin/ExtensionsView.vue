@@ -21,6 +21,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
+import PluginActionButton from '@/components/PluginActionButton.vue'
 import PluginMeta from '@/components/PluginMeta.vue'
 import CapabilityBadges from '@/components/CapabilityBadges.vue'
 import BindingHealthDialog from '@/components/BindingHealthDialog.vue'
@@ -242,6 +243,14 @@ async function openGlobal(p: Any) {
   ge.plugin = { ...(p as PRow), ...d }
   ge.values = mergeValues(d.settings_schema ?? [], b?.settings ?? {})
   ge.loading = false
+}
+async function onGlobalActionDone() {
+  await loadPlugins()
+  const b = ge.plugin ? globalMap.value[ge.plugin.id] : null
+  if (b && ge.plugin) {
+    ge.binding = b
+    ge.values = mergeValues(ge.plugin.settings_schema ?? [], b.settings ?? {})
+  }
 }
 async function saveGlobal() {
   if (!ge.plugin || !geForm.value || !geForm.value.validate()) return
@@ -944,6 +953,9 @@ onMounted(() => {
         <template v-if="ge.plugin">
           <el-alert v-if="ge.plugin.data_scope === 'all'" type="error" :closable="false" show-icon :title="t('plugin.allDataWarn')" class="mb" />
           <p class="small">{{ ge.plugin.name || ge.plugin.id }} · {{ t('scope.global') }}</p>
+          <div v-if="ge.binding && ge.plugin.actions?.length" class="action-row">
+            <PluginActionButton v-for="a in ge.plugin.actions" :key="a.id" :binding-id="ge.binding.id" :action="a" admin @done="onGlobalActionDone" />
+          </div>
           <SchemaForm ref="geForm" v-model="ge.values" :schema="ge.plugin.settings_schema ?? []" :keep-secret="!!ge.binding" :external-errors="ge.extErrors" />
           <el-form label-width="140px" @submit.prevent>
             <el-form-item :label="t('binding.priority')">
@@ -990,6 +1002,11 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.action-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 .small { font-size: 12px; }
 .stat { padding: 12px 16px; }
 .stat-v { font-size: 22px; font-weight: 600; margin-top: 4px; }

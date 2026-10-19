@@ -74,6 +74,18 @@ export default {
       superOnly: '仅超级管理员可卸载',
       readonlyTag: '只读',
     },
+    pluginAction: {
+      qrAlt: '扫码二维码',
+      scanHint: '请用手机 QQ 扫描二维码完成绑定',
+      openLink: '二维码显示异常？点此在浏览器打开',
+      done: '绑定成功',
+      doneHint: '凭据已保存并生效',
+      expired: '二维码已过期',
+      failed: '操作失败',
+      retry: '重新获取',
+      noQr: '没有拿到二维码',
+      saveFirst: '请先保存绑定后再扫码',
+    },
   },
   en: {
     extv: {
@@ -149,6 +161,18 @@ export default {
       loadFailedList: 'Plugins that failed to load',
       superOnly: 'Only super admins can uninstall',
       readonlyTag: 'Read-only',
+    },
+    pluginAction: {
+      qrAlt: 'QR code to scan',
+      scanHint: 'Scan the QR code with mobile QQ to finish binding',
+      openLink: 'QR not rendering? Open the link in a browser',
+      done: 'Bound successfully',
+      doneHint: 'Credentials were saved and are active',
+      expired: 'QR code expired',
+      failed: 'Action failed',
+      retry: 'Get a new code',
+      noQr: 'No QR code was returned',
+      saveFirst: 'Save the binding before scanning',
     },
   },
 } as const

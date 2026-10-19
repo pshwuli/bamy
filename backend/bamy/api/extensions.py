@@ -1,7 +1,9 @@
 """策略、插件与插件绑定接口（《接口契约》第六节，22.8–22.10）。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +24,7 @@ from bamy.services import system_config
 from bamy.services.audit import write_audit
 
 router = APIRouter()
+plugin_hub_log = logging.getLogger("bamy.pluginhub")
 
 
 # ======================================================================== 同步元表
@@ -113,6 +116,7 @@ def _plugin_out(ext: Extension, user: User, detail: bool = False, uninstalled: b
            "icon": (m.get("ui") or {}).get("icon")}
     if detail:
         out |= {"settings_schema": ext.settings_schema, "hooks": hooks,
+                "actions": [{"id": a["id"], "label": a["label"]} for a in ext.actions],
                 "network": {"enabled": bool(net), "hosts": list(net.get("hosts") or []),
                             "timeout_ms": net.get("timeout_ms")} if net else {"enabled": False, "hosts": []},
                 "dependencies": m.get("dependencies") or {}, "homepage": m.get("homepage"), "license": m.get("license")}
@@ -457,6 +461,44 @@ async def update_binding(binding_id: int, body: BindingPatch, ctx: Ctx = Depends
     return ok((await _out_many(ctx.db, [b]))[0])
 
 
+class ActionIn(BaseModel):
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+async def run_action_core(ctx: Ctx, b: PluginBinding, action_id: str, payload: dict[str, Any], *,
+                          admin_mode: bool) -> dict[str, Any]:
+    """触发插件声明的手动动作（如扫码绑定）。
+
+    插件可在返回值里带 settings_patch：由这里走与手动改设置相同的校验、加密、落库和热更新路径，
+    并且在返回给浏览器前剔除，凭据不会离开服务端。
+    """
+    ext = registry.get_plugin(b.plugin_id)
+    if ext is None or not ext.loaded or not b.enabled or b.status != "enabled":
+        raise ApiError(42283)
+    try:
+        result = await plugin_hub.run_action(b.id, action_id, payload)
+    except LookupError as exc:
+        raise ApiError(42201, str(exc)) from exc
+    except ValueError as exc:      # 插件主动抛出的、可直接展示给用户的失败原因
+        raise ApiError(42201, str(exc)[:200]) from exc
+    except asyncio.TimeoutError as exc:
+        raise ApiError(42201, "动作执行超时，请稍后重试") from exc
+    except Exception as exc:  # noqa: BLE001 - 其余异常不向用户暴露细节
+        plugin_hub_log.warning("插件 %s#%s 动作 %s 失败：%s", b.plugin_id, b.id, action_id, type(exc).__name__)
+        raise ApiError(42201, "动作执行失败，请查看日志") from exc
+    patch = result.pop("settings_patch", None)
+    if isinstance(patch, dict) and patch:
+        await update_binding_core(ctx, b, BindingPatch(settings=patch), admin_mode=admin_mode)
+        result["settings_updated"] = True
+    return result
+
+
+@router.post("/api/plugin-bindings/{binding_id}/actions/{action_id}")
+async def run_binding_action(binding_id: int, action_id: str, body: ActionIn, ctx: Ctx = Depends(current)):
+    b = await _get_binding(ctx, binding_id)
+    return ok(await run_action_core(ctx, b, action_id, body.payload, admin_mode=False))
+
+
 async def delete_binding_core(ctx: Ctx, b: PluginBinding) -> None:
     b.deleted_at = datetime.utcnow()
     b.enabled = False
@@ -568,6 +610,14 @@ async def admin_update_binding(binding_id: int, body: BindingPatch, ctx: Ctx = D
     b = await _get_binding(ctx, binding_id, admin_mode=True)
     b = await update_binding_core(ctx, b, body, admin_mode=True)
     return ok((await _out_many(ctx.db, [b]))[0])
+
+
+@router.post("/api/admin/plugin-bindings/{binding_id}/actions/{action_id}")
+async def admin_run_binding_action(binding_id: int, action_id: str, body: ActionIn, ctx: Ctx = Depends(admin)):
+    b = await _get_binding(ctx, binding_id, admin_mode=True)
+    if b.scope != "global":
+        raise ApiError(40407)     # 管理员只能对全局绑定触发动作，不能往用户的绑定里写凭据
+    return ok(await run_action_core(ctx, b, action_id, body.payload, admin_mode=True))
 
 
 @router.delete("/api/admin/plugin-bindings/{binding_id}", status_code=204)

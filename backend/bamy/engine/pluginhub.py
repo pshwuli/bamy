@@ -432,6 +432,25 @@ class PluginHub:
     def live_ids(self) -> list[int]:
         return list(self._live)
 
+    async def run_action(self, binding_id: int, action_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """执行插件声明的手动动作（如扫码绑定）。
+
+        同一绑定的动作串行执行；返回值必须是 dict。动作失败不计入健康度（是用户手动触发，不是运行期故障）。
+        """
+        live = self._live.get(binding_id)
+        if live is None:
+            raise LookupError("绑定未生效，请先启用")
+        ext = registry.get_plugin(live.binding.plugin_id)
+        action = next((a for a in (ext.actions if ext else []) if a.get("id") == action_id), None)
+        if action is None:
+            raise LookupError(f"插件未声明动作 {action_id}")
+        handler = getattr(live.obj, str(action["handler"]))
+        async with live.lock:
+            result = await asyncio.wait_for(handler(payload), timeout=30)
+        if not isinstance(result, dict):
+            raise TypeError("动作必须返回 dict")
+        return result
+
 
 def _deny(result: InterceptResult, code: int, message: str, detail: dict[str, Any]) -> InterceptResult:
     result.allowed = False
