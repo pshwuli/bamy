@@ -1,0 +1,101 @@
+kind: plugin
+
+id: qq_notify
+name: QQ 群通知
+version: 1.0.0
+author: bamy
+description: >-
+  通过 QQ 官方机器人 API v2 把成交、出错、自动停止、风控触发（含合约强平）和系统告警推送到指定 QQ 群。
+  消息都以"BAMY"开头。QQ 平台对机器人主动消息有数量限制，请先用"每分钟最多推送"和"最低等级"控制推送量。
+tags: [notify]
+min_bamy_version: 1.0.0
+license: MIT
+
+scopes: [user, account, global]
+default_scope: user
+allow_multiple: false
+
+data_scope: own
+
+priority: 100
+
+network:
+  enabled: true
+  hosts:
+    - bots.qq.com
+    - api.sgroup.qq.com
+  timeout_ms: 5000
+
+hooks:
+  - event: order.filled
+    handler: on_filled
+  - event: instance.error
+    handler: on_error
+  - event: instance.auto_stopped
+    handler: on_auto_stopped
+  - event: risk.breached
+    handler: on_risk
+  - event: system.alert
+    handler: on_alert
+
+settings:
+  - key: app_id
+    label: AppID
+    type: string
+    required: true
+    max_length: 32
+    help: QQ 开放平台 → 机器人 → 开发设置里的 AppID
+    group: 机器人
+
+  - key: app_secret
+    label: AppSecret
+    type: secret
+    required: true
+    help: 同一页面的 AppSecret（用于换取 access_token）
+    group: 机器人
+
+  - key: group_openid
+    label: 群 openid
+    type: string
+    required: true
+    max_length: 64
+    help: 不是群号。把机器人拉进群并 @ 它一次，从事件推送里取 group_openid
+    group: 机器人
+
+  - key: sandbox
+    label: 沙箱环境
+    type: bool
+    default: false
+    help: 机器人还在沙箱调试阶段时打开，走 sandbox.api.sgroup.qq.com
+    group: 机器人
+
+  - key: min_level
+    label: 最低等级
+    type: select
+    default: info
+    options:
+      - { value: info, label: 信息 }
+      - { value: warn, label: 警告 }
+      - { value: error, label: 错误 }
+    help: 低于该等级的消息不推送（成交为信息，出错和强平为错误）
+    group: 规则
+
+  - key: notify_fills
+    label: 推送成交
+    type: bool
+    default: true
+    help: 关掉后只推送出错、停止、风控和告警
+    group: 规则
+
+  - key: rate_limit
+    label: 每分钟最多推送
+    type: int
+    default: 10
+    min: 1
+    max: 60
+    group: 规则
+
+dependencies:
+  python: ">=3.11"
+  packages:
+    - httpx>=0.25.0
