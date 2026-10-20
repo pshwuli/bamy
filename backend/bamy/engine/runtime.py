@@ -767,7 +767,7 @@ class Engine:
         async with session_scope() as db:
             inst = await db.get(Instance, instance_id)
             symbol = symbol or inst.symbol
-            allowed = {"running", "stopping", "starting", "paused"} | ({"stopped", "error", "created"} if allow_stopped else set())
+            allowed = {"running", "stopping", "starting", "pausing", "paused"} | ({"stopped", "error", "created"} if allow_stopped else set())
             if inst.status not in allowed:
                 raise ApiError(40902, "实例未运行")
             if amount <= 0:

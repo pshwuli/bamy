@@ -119,8 +119,7 @@ class MarketScannerStrategy(BaseStrategy):
         if now - self.t_manage >= float(self.p["manage_seconds"]):
             self.t_manage = now
             for sym in list(self.pos):
-                if not self.paused:                      # 暂停期间不执行程序侧的止损、止盈、到期平仓
-                    await self._manage(sym)
+                await self._manage(sym)
         if self.scan_task is not None and self.scan_task.done():
             exc = self.scan_task.exception()
             self.scan_task = None
@@ -454,11 +453,34 @@ class MarketScannerStrategy(BaseStrategy):
             self._forget(order.symbol)
             await self._save()
 
+    async def on_pause(self) -> None:
+        """引擎暂停会取消行情订阅，程序不再看盘，所以暂停前必须先平掉全部持仓。"""
+        await self._flatten("暂停")
+
     async def on_stop(self) -> None:
         if self.scan_task is not None:
             self.scan_task.cancel()
+        await self._flatten("停止")
+        self.ctx.log_info("全市场扫描停止")
+
+    async def _flatten(self, why: str) -> None:
+        """平掉全部持仓（最多试 3 次）。平不掉的会写错误日志，交易所上的止损单保持有效。"""
+        if self.scan_task is not None and why == "暂停":
+            self.scan_task.cancel()
+            self.scan_task = None
+        self.pending = None
+        for attempt in range(3):
+            for sym in list(self.pos):
+                try:
+                    await self._close(sym, f"{why}平仓")
+                except Exception as exc:  # noqa: BLE001 - 单个币平仓抛异常不能让其余的也漏掉
+                    self.ctx.log_warn(f"{sym} {why}平仓异常：{type(exc).__name__}: {exc}")
+            if not self.pos:
+                break
+            await asyncio.sleep(1)
+        if self.pos:
+            self.ctx.log_error(f"{why}时没能平掉 {'、'.join(self.pos)}，请立刻手动处理；交易所上的止损单仍然有效")
         await self._save()
-        self.ctx.log_info("全市场扫描停止" + (f"，持仓 {'、'.join(self.pos)} 已保存，交易所止损单继续有效" if self.pos else ""))
 
     async def list_positions(self) -> list[dict[str, Any]]:
         out = []
@@ -485,7 +507,8 @@ class MarketScannerStrategy(BaseStrategy):
 
     async def pause(self) -> None:
         self.paused = True
-        self.ctx.log_info("已暂停：不扫描、不买新仓、不检查止损止盈和到期（已有持仓保留，交易所上的止损单仍然有效）")
+        await self._flatten("暂停")
+        self.ctx.log_info("已暂停：持仓已全部平掉，不再买新仓")
 
     async def resume(self) -> None:
         self.paused = False
