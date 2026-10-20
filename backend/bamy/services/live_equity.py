@@ -128,3 +128,27 @@ async def live_pnl(db: AsyncSession, inst: Instance) -> dict[str, Any]:
     initial = capital_of(inst)
     return {"initial": initial, "equity": initial + pnl if initial else None, "realized": realized - fees,
             "unrealized": unrealized, "pnl": pnl, "fees": fees, "fee_other": fee_other}
+
+
+async def backfill_capital(db: AsyncSession, inst: Instance, lp: dict[str, Any]) -> dict[str, Any]:
+    """没填本金、启动时也没记过基准的实盘实例（功能上线前启动的）：查看时按账号当前 USDT 余额补记一次。
+
+    余额里已含本实例的已实现盈亏，所以基准 = 余额 - 已实现盈亏，这样权益 ≈ 当前余额，不会把盈亏算两遍。
+    补记成功后返回重新算过的结果；取不到余额就原样返回。
+    """
+    if inst.paper or lp.get("initial") is not None or not inst.account_id:
+        return lp
+    try:
+        from bamy.db.models import Account
+        from bamy.engine.client_pool import pool
+
+        client = await pool.get(await db.get(Account, inst.account_id))
+        usdt = next((b.total for b in await client.fetch_balance() if b.asset == "USDT"), None)
+    except Exception:  # noqa: BLE001
+        return lp
+    base = _positive((usdt or 0) - lp.get("realized", 0.0))
+    if base is None:
+        return lp
+    inst.paper_config = json.dumps(_cfg(inst) | {"auto_capital": base})
+    await db.commit()
+    return await live_pnl(db, inst)

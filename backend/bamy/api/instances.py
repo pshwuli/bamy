@@ -30,7 +30,7 @@ from bamy.extensions.registry import registry
 from bamy.extensions.schema import (SchemaError, encrypt_secrets, mask_secrets, merge_secrets, secret_keys,
                                     validate)
 from bamy.services import system_config
-from bamy.services.live_equity import live_pnl
+from bamy.services.live_equity import backfill_capital, live_pnl
 from bamy.services.audit import audit_dict, int_filter, query_audit, system_log_dict, write_audit
 
 router = APIRouter()
@@ -99,7 +99,7 @@ async def _out(ctx: Ctx, rows: list[Instance]) -> list[dict[str, Any]]:
         initial = None
         pnl = None
         if not i.paper:
-            lp = await live_pnl(ctx.db, i)
+            lp = await backfill_capital(ctx.db, i, await live_pnl(ctx.db, i))
             equity, initial, pnl = lp["equity"], lp["initial"], lp["pnl"]
         if i.paper:
             acct = (await ctx.db.execute(select(PaperAccount).where(PaperAccount.instance_id == i.id))).scalar_one_or_none()
@@ -410,7 +410,7 @@ async def instance_status(instance_id: int, ctx: Ctx = Depends(current)):
         equity = float(book.equity(await engine._prices(book)))
         balance = float(book.balance)
     else:
-        live = await live_pnl(ctx.db, inst)
+        live = await backfill_capital(ctx.db, inst, await live_pnl(ctx.db, inst))
         equity = live["equity"]
         balance = live["initial"] + live["realized"] if live["initial"] else None
     tick = market.cached(inst.symbol)
