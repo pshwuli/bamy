@@ -20,6 +20,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from bamy.core.config import settings
 from bamy.core.errors import ApiError
+from bamy.core.redact import describe_exc
 from bamy.db.models import (
     Account, Instance, InstanceState, Notification, Order, PaperAccount, PaperSnapshot,
     PluginState, PositionSnapshot, ReconcileDiff, RiskRule, SystemLog, User,
@@ -335,8 +336,8 @@ class Engine:
                 raise ApiError(42232, "启动超时") from exc
             except Exception as exc:  # noqa: BLE001 - on_start 等异常 → error
                 await self._teardown(instance_id)
-                await self._set_status(instance_id, "error", last_error=f"启动失败：{exc}")
-                raise ApiError(42232, f"启动失败：{exc}") from exc
+                await self._set_status(instance_id, "error", last_error=f"启动失败：{describe_exc(exc)}")
+                raise ApiError(42232, f"启动失败：{describe_exc(exc)}") from exc
             inst = await self._set_status(instance_id, "running", last_started_at=datetime.utcnow(),
                                           last_error=None, consecutive_errors=0)
             async with session_scope() as db:
@@ -1614,10 +1615,11 @@ class Engine:
             balances = {b.asset: b.total for b in await client.fetch_balance()}
             open_orders = {o.client_order_id: o for o in await self._open_orders_by_symbol(client, symbols)}
         except Exception as exc:  # noqa: BLE001
+            why = describe_exc(exc)      # 带异常类型，去掉请求地址里的签名
             if reason == "start":
-                raise ApiError(40912, f"对账失败：{exc}") from exc
-            log.warning("账号对账失败 account=%s：%s", account_id, exc)
-            return {"account_id": account_id, "error": str(exc)}
+                raise ApiError(40912, f"对账失败：{why}") from exc
+            log.warning("账号对账失败 account=%s：%s", account_id, why)
+            return {"account_id": account_id, "error": why}
         async with session_scope() as db:
             local_open = (await db.execute(select(Order).where(Order.account_id == account_id,
                                                                Order.status.in_(("submitted", "partial", "unknown"))))).scalars().all()

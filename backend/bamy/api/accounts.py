@@ -118,6 +118,7 @@ async def create_account(body: AccountIn, ctx: Ctx = Depends(current)):
                   api_secret_enc=encrypt(body.api_secret), env=body.env, market_type=body.market_type,
                   readonly=body.readonly or not info.get("can_trade", True), status="online", remark=body.remark,
                   ip_whitelist=json.dumps(body.ip_whitelist) if body.ip_whitelist else None,
+                  position_mode=info.get("position_mode"),
                   last_verified_at=datetime.utcnow(), last_active_at=datetime.utcnow())
     ctx.db.add(acc)
     await ctx.db.commit()
@@ -146,7 +147,7 @@ async def batch_import(body: BatchIn, ctx: Ctx = Depends(current)):
         acc = Account(owner_id=ctx.user.id, name=item.name, api_key_enc=encrypt(item.api_key),
                       api_secret_enc=encrypt(item.api_secret), env=item.env, market_type=item.market_type,
                       readonly=item.readonly or not info.get("can_trade", True), status="online", remark=item.remark,
-                      last_verified_at=datetime.utcnow())
+                      position_mode=info.get("position_mode"), last_verified_at=datetime.utcnow())
         ctx.db.add(acc)
         await ctx.db.commit()
         plugin_hub.remember_account(acc.id, ctx.user.id)
@@ -206,6 +207,8 @@ async def update_credentials(account_id: int, body: CredIn, ctx: Ctx = Depends(c
     acc.status, acc.last_verified_at = "online", datetime.utcnow()
     if not info.get("can_trade", True):
         acc.readonly = True
+    if acc.market_type == "futures" and info.get("position_mode"):
+        acc.position_mode = info["position_mode"]
     await ctx.db.commit()
     await pool.drop(acc.id)
     # 账号恢复后必须与币安对账
