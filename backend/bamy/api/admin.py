@@ -464,7 +464,18 @@ async def view(token: str, request: Request, db=Depends(get_session)):
             data |= {"equity": equity, "return_rate": round((equity - initial) / initial, 6) if initial else None,
                      "equity_curve": [{"t": iso(x.snapshot_at), "v": float(x.equity)} for x in snaps[-500:]]}
         else:
-            # 实盘：取最新快照的权益和收益率
+            # 实盘：有快照取最新快照；没有快照（新实例、从没写过快照）就按实时盈亏口径算，不能整段不返回
+            if not snaps:
+                from bamy.services.live_equity import backfill_capital, live_pnl
+
+                lp = await backfill_capital(db, inst, await live_pnl(db, inst))
+                if lp["equity"] is not None:
+                    initial = lp["initial"]
+                    data |= {"equity": lp["equity"],
+                             "return_rate": round(lp["pnl"] / initial, 6) if initial else None,
+                             "equity_curve": []}
+                else:
+                    data |= {"pnl": lp["pnl"]}
             if snaps:
                 latest = snaps[-1]
                 equity = float(latest.equity)
