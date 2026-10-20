@@ -6,11 +6,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from sqlalchemy import UniqueConstraint, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bamy.core.config import settings
-from bamy.db.models import Base
 
 log = logging.getLogger("bamy.db")
 
@@ -52,71 +50,22 @@ if settings.database_url.startswith("sqlite"):
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-def _sync_missing_columns(sync_conn) -> list[str]:
-    """补齐新增列，并在可执行时补齐模型声明的索引/唯一约束。"""
-    inspector = inspect(sync_conn)
-    existing_tables = set(inspector.get_table_names())
-    dialect = sync_conn.dialect
-    added: list[str] = []
-
-    for table in Base.metadata.sorted_tables:
-        if table.name not in existing_tables:
-            continue
-        have = {c["name"] for c in inspector.get_columns(table.name)}
-        for column in table.columns:
-            if column.name in have:
-                continue
-            try:
-                col_type = column.type.compile(dialect=dialect)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("无法推断字段类型，跳过 %s.%s：%s", table.name, column.name, exc)
-                continue
-            ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
-            sync_conn.execute(text(ddl))
-            added.append(f"{table.name}.{column.name}")
-
-    existing_indexes = {index["name"] for table in existing_tables
-                        for index in inspector.get_indexes(table)}
-    existing_constraints = {constraint["name"] for table in existing_tables
-                            for constraint in inspector.get_unique_constraints(table)}
-    for table in Base.metadata.sorted_tables:
-        if table.name not in existing_tables:
-            continue
-        for constraint in table.constraints:
-            if not isinstance(constraint, UniqueConstraint):
-                continue
-            name = constraint.name
-            if not name or name in existing_constraints:
-                continue
-            columns = ", ".join(f'"{column.name}"' for column in constraint.columns)
-            try:
-                sync_conn.execute(text(f'CREATE UNIQUE INDEX "{name}" ON "{table.name}" ({columns})'))
-                existing_constraints.add(name)
-                added.append(f"{table.name}.{name}")
-            except Exception as exc:  # noqa: BLE001 - duplicate legacy rows need manual cleanup
-                log.warning("无法补齐唯一约束 %s.%s：%s", table.name, name, exc)
-        for index in table.indexes:
-            name = index.name
-            if not name or name in existing_indexes:
-                continue
-            columns = ", ".join(f'"{column.name}"' for column in index.columns)
-            try:
-                sync_conn.execute(text(f'CREATE INDEX "{name}" ON "{table.name}" ({columns})'))
-                existing_indexes.add(name)
-                added.append(f"{table.name}.{name}")
-            except Exception as exc:  # noqa: BLE001
-                log.warning("无法补齐索引 %s.%s：%s", table.name, name, exc)
-
-    return added
-
-
 async def init_db() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # 兼容旧库：补齐模型里新增的列
-        added = await conn.run_sync(_sync_missing_columns)
-    if added:
-        log.warning("数据库已补齐缺失字段：%s", ", ".join(added))
+    """把数据库升级到最新结构（alembic upgrade head）。新库建全部表，旧库按版本链逐步追平。"""
+    import asyncio
+
+    from bamy.db.migrate import upgrade_sync
+
+    for attempt in range(1, 4):
+        try:
+            async with engine.begin() as conn:       # 每次重试都是新事务
+                await conn.run_sync(upgrade_sync)
+            return
+        except Exception as exc:  # noqa: BLE001 - 多进程同时启动时 SQLite 可能撞车，第二次会看到已是 head
+            if attempt == 3:
+                raise
+            log.warning("数据库迁移第 %s 次失败，重试：%s", attempt, exc)
+            await asyncio.sleep(0.5 * attempt)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

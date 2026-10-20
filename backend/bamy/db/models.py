@@ -275,6 +275,10 @@ class Order(Base):
     filled_at: Mapped[datetime | None] = mapped_column(DateTime)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+    # 乐观锁：每次 UPDATE 都带 WHERE row_version = 旧值 并加 1，别的进程抢先改了就抛 StaleDataError，
+    # 由 engine 重读重试。这样多 worker 下用户流、REST 对账、撤单同时回写同一笔订单也不会互相覆盖。
+    row_version: Mapped[int] = mapped_column(Integer, server_default="1", nullable=False)
+    __mapper_args__ = {"version_id_col": row_version}
     __table_args__ = (
         Index("ix_orders_instance_created", "instance_id", "created_at"),
         Index("ix_orders_owner_created", "owner_id", "created_at"),

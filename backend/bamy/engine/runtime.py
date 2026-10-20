@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from bamy.core.config import settings
 from bamy.core.errors import ApiError
@@ -88,7 +89,27 @@ class Engine:
         return self._op_locks.setdefault(instance_id, asyncio.Lock())
 
     def order_lock(self, order_id: int) -> asyncio.Lock:
+        """进程内的订单锁：只挡同一进程里的并发。跨进程（多 worker）靠 orders.row_version 乐观锁和 Postgres 行锁。"""
         return self._order_locks.setdefault(order_id, asyncio.Lock())
+
+    async def _mutate_order(self, order_id: int, fn, *, attempts: int = 5) -> Order:
+        """读-改-写一笔订单：Postgres 上 SELECT ... FOR UPDATE 行锁，所有数据库都带 row_version 条件更新。
+
+        别的进程抢先改了就抛 StaleDataError，这里重读后重新执行 fn(o)，所以 fn 必须只依赖 o 的当前状态。
+        """
+        for attempt in range(attempts):
+            try:
+                async with session_scope() as db:
+                    o = await _get_order_locked(db, order_id)
+                    fn(o)
+                    await db.commit()
+                    await db.refresh(o)
+                    return o
+            except StaleDataError:
+                if attempt == attempts - 1:
+                    raise
+                await asyncio.sleep(0.05 * (attempt + 1))
+        raise RuntimeError("unreachable")
 
     def state_lock(self, scope: str, owner_id: int, key: str) -> asyncio.Lock:
         return self._state_locks.setdefault((scope, owner_id, key[:64]), asyncio.Lock())
@@ -697,24 +718,24 @@ class Engine:
             amount = float(res.payload.get("amount", amount))
             price = res.payload.get("price", price)
             type_ = res.payload.get("type", type_)
-            async with session_scope() as db:
-                o = await db.get(Order, order.id)
+            def apply_modify(o: Order) -> None:
                 o.amount = Decimal(str(amount))
                 o.price = Decimal(str(price)) if price is not None else None
                 o.type = type_
                 o.intercepted_by = ",".join(f"{t['plugin_id']}#{t['binding_id']}" for t in modified)[:64]
                 o.intercepted_action = "MODIFY"
-                await db.commit()
+
+            await self._mutate_order(order.id, apply_modify)
             if amount <= 0:
                 return await self._reject(order.id, "插件改写后数量不合法", code=42201)
 
         # ---- 阶段 3：发送 ----
-        async with session_scope() as db:
-            o = await db.get(Order, order.id)
+        def apply_submitting(o: Order) -> None:
             o.status = "submitting"
             o.raw_request = json.dumps({"symbol": o.symbol, "side": side, "position_side": position_side,
                                         "amount": amount, "price": price, "type": type_, "stop_price": stop_price})
-            await db.commit()
+
+        await self._mutate_order(order.id, apply_submitting)
         result: ExchangeOrder | None = None
         error: ExchangeError | None = None
         run = self.running.get(instance_id)
@@ -743,13 +764,14 @@ class Engine:
         # ---- 阶段 4：处理返回 ----
         if error is not None:
             if error.unknown:
-                async with session_scope() as db:
-                    o = await db.get(Order, order.id)
-                    o.status = "unknown"
-                    o.reason = str(error)[:2000]
-                    await db.commit()
-                    await db.refresh(o)
-                await self.push("order.failed", _event(o) | {"unknown": True})
+                def apply_unknown(o: Order) -> None:
+                    if o.status in {"pending", "submitting"}:     # 别的进程已经把它推进到成交/撤单等状态就不要倒退
+                        o.status = "unknown"
+                        o.reason = str(error)[:2000]
+
+                o = await self._mutate_order(order.id, apply_unknown)
+                if o.status == "unknown":
+                    await self.push("order.failed", _event(o) | {"unknown": True})
                 return _view(o)
             if error.code == 40102 or "authentication" in str(error).lower():
                 asyncio.create_task(self.account_invalid(inst.account_id, str(error)))
@@ -861,15 +883,15 @@ class Engine:
     async def _reject(self, order_id: int, reason: str, *, code: int | None = None, rule: str | None = None,
                       intercepted_by: str | None = None, intercepted_action: str | None = None,
                       detail: dict[str, Any] | None = None) -> OrderView:
-        async with session_scope() as db:
-            o = await db.get(Order, order_id)
+        def apply_reject(o: Order) -> None:
             o.status = "rejected"
             o.reason = f"[{code}] {reason}" if code else reason
             if intercepted_by:
                 o.intercepted_by = intercepted_by[:64]
                 o.intercepted_action = intercepted_action
-            await db.commit()
-            await db.refresh(o)
+
+        o = await self._mutate_order(order_id, apply_reject)
+        async with session_scope() as db:
             await write_audit(db, action="order.intercepted" if intercepted_by else "order.rejected",
                               actor_id=None, target_type="order", target_id=o.id,
                               new_value={"reason": reason, "code": code, "rule": rule, "detail": detail,
@@ -883,7 +905,14 @@ class Engine:
 
     async def _apply_result(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
         async with self.order_lock(order_id):
-            return await self._apply_result_locked(order_id, result, submitted=submitted)
+            for attempt in range(5):
+                try:
+                    # 冲突发生在 commit，那时还没推任何事件，整体重来是安全的
+                    return await self._apply_result_locked(order_id, result, submitted=submitted)
+                except StaleDataError:
+                    if attempt == 4:
+                        raise
+                    await asyncio.sleep(0.05 * (attempt + 1))
 
     async def _apply_result_locked(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
         """按单调状态和成交量收敛并发返回、用户流和对账事件。"""
@@ -891,7 +920,7 @@ class Engine:
         if handled is not None:
             return handled
         async with session_scope() as db:
-            o = await db.get(Order, order_id)
+            o = await _get_order_locked(db, order_id)
             before = o.status
             rank = {"pending": 0, "submitting": 1, "submitted": 2, "partial": 3,
                     "canceling": 3, "unknown": 1, "filled": 4, "canceled": 4, "rejected": 4, "failed": 4}
@@ -947,7 +976,7 @@ class Engine:
         返回 None 表示订单不是终态（或 filled 订单收到非 filled 以外的合法迁移），交给主路径。
         """
         async with session_scope() as db:
-            o = await db.get(Order, order_id)
+            o = await _get_order_locked(db, order_id)
             before = o.status
             if before not in {"filled", "canceled", "rejected", "failed"}:
                 return None
@@ -1035,16 +1064,23 @@ class Engine:
 
     # ---- 撤单 ----
     async def cancel_order(self, ctx, order_id: str | int, *, actor_id: int | None = None) -> OrderView:
-        async with session_scope() as db:
-            o = await self._find_order(db, ctx.instance_id, order_id)
-            if o.status in {"canceled", "canceling"}:
-                return _view(o)  # 状态幂等
-            if o.status not in {"submitted", "partial"}:
-                raise ApiError(42246, f"订单状态 {o.status} 不可撤销")
-            prev = o.status
-            o.status = "canceling"
-            await db.commit()
-            inst = await db.get(Instance, o.instance_id)
+        for attempt in range(5):
+            try:
+                async with session_scope() as db:
+                    o = await self._find_order(db, ctx.instance_id, order_id)
+                    if o.status in {"canceled", "canceling"}:
+                        return _view(o)  # 状态幂等
+                    if o.status not in {"submitted", "partial"}:
+                        raise ApiError(42246, f"订单状态 {o.status} 不可撤销")
+                    prev = o.status
+                    o.status = "canceling"
+                    await db.commit()
+                    inst = await db.get(Instance, o.instance_id)
+                break
+            except StaleDataError:          # 别的进程刚改过这笔订单：重读后按新状态重新判断
+                if attempt == 4:
+                    raise ApiError(40902, "订单正在被更新，请稍后重试") from None
+                await asyncio.sleep(0.05 * (attempt + 1))
         try:
             if inst.paper:
                 run = self.running.get(inst.id)
@@ -1056,17 +1092,19 @@ class Engine:
                     client = await pool.get(await db.get(Account, inst.account_id))
                 result = await asyncio.wait_for(client.cancel_order(o.exchange_order_id, o.symbol), timeout=10)
         except asyncio.TimeoutError:
-            async with session_scope() as db:
-                row = await db.get(Order, o.id)
-                row.status = "unknown"
-                await db.commit()
+            def to_unknown(row: Order) -> None:
+                if row.status == "canceling":         # 已经被推进到成交/撤单的不要覆盖
+                    row.status = "unknown"
+
+            await self._mutate_order(o.id, to_unknown)
             raise ApiError(50401, "撤单超时，订单进入对账")
         except Exception as exc:  # noqa: BLE001 - 失败恢复原状态
-            async with session_scope() as db:
-                row = await db.get(Order, o.id)
-                row.status = prev
-                row.reason = f"撤单失败：{exc}"[:2000]
-                await db.commit()
+            def restore(row: Order) -> None:
+                if row.status == "canceling":
+                    row.status = prev
+                    row.reason = f"撤单失败：{exc}"[:2000]
+
+            await self._mutate_order(o.id, restore)
             raise ApiError(50201, f"撤单失败：{exc}") from exc
         view = await self._apply_result(o.id, result)
         async with session_scope() as db:
@@ -1855,6 +1893,11 @@ class Engine:
 
 
 # ---------------------------------------------------------------------------
+async def _get_order_locked(db, order_id: int) -> Order | None:
+    """读订单并加行锁（Postgres 的 FOR UPDATE；SQLite 不支持，会被忽略，靠 row_version 乐观锁兜底）。"""
+    return (await db.execute(select(Order).where(Order.id == order_id).with_for_update())).scalar_one_or_none()
+
+
 def _f(v: Any) -> float | None:
     try:
         return float(v) if v is not None else None
