@@ -298,12 +298,12 @@ class MarketScannerStrategy(BaseStrategy):
             return float(usdt.get("total") or free) + self._unrealized(), free
         from bamy.db.models import Instance
         from bamy.db.session import session_scope
-        from bamy.services.live_equity import live_capital
+        from bamy.services.live_equity import capital_of
 
         async with session_scope() as db:
             inst = await db.get(Instance, self.ctx.instance_id)
-            capital = live_capital(inst) if inst else None
-        # 实盘账号可能被多个实例共用：设了本金就按本金算，没设退回账号余额
+            capital = capital_of(inst) if inst else None
+        # 实盘账号可能被多个实例共用：手填本金优先，其次用首次启动记下的基准，都没有才退回账号余额
         return (capital if capital else float(usdt.get("total") or free)) + self._unrealized(), free
 
     async def _open(self, sym: str, price: float) -> bool:

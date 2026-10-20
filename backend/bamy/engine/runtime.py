@@ -1690,8 +1690,7 @@ class Engine:
                                           {"symbol": sym, "side": side, "amount": act_amt}))
 
             # 同一对象的未解决差异只更新原记录，不再每轮对账新增一条
-            await record_diffs(db, account_id, items)
-            diffs += len(items)
+            diffs += await record_diffs(db, account_id, items)     # 只统计新增的，更新旧记录不再重复推事件
         if diffs:
             await self.push("reconcile.diff", {"account_id": account_id, "owner_id": account.owner_id, "count": diffs})
         await self.push("reconcile.completed", {"account_id": account_id, "owner_id": account.owner_id,
