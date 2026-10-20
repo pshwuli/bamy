@@ -203,7 +203,7 @@ class QQNotify(BasePlugin):
         patch: dict[str, Any] = {"app_id": app_id, "app_secret": app_secret}
         openid = str(data.get("user_openid") or "")
         if openid:
-            patch |= {"user_openid": openid, "target_type": "c2c"}
+            patch["user_openid"] = openid
         self.ctx.log_info(f"扫码绑定成功，AppID={app_id}")
         return {"status": "done", "app_id": app_id, "user_openid": openid or None, "settings_patch": patch}
 
@@ -395,25 +395,29 @@ class QQNotify(BasePlugin):
         if self.ctx.http is None:
             self.ctx.log_error("未开放出网，无法推送")
             return
-        path = self._target_path()
-        if path is None:
+        paths = self._target_paths()
+        if not paths:
             self.ctx.log_error("未配置推送目标：请扫码绑定，或填写用户 openid / 群 openid")
             return
         markdown, plain = _render(title, rows)
+        for label, path in paths:          # 私聊和群都配了就两边都发；一边失败不影响另一边
+            await self._send_one(label, path, markdown, plain)
+
+    async def _send_one(self, label: str, path: str, markdown: str, plain: str) -> None:
         try:
             status, data = await self._deliver(path, {"markdown": {"content": markdown[:MAX_CONTENT]}, "msg_type": 2})
             if status is None or status < 400:
                 return
             # Markdown 被平台拒绝（例如机器人没有 Markdown 权限）：改发纯文本，消息不丢
-            self.ctx.log_warn(f"Markdown 发送被拒，改发纯文本：HTTP {status} code={data.get('code', '')} "
+            self.ctx.log_warn(f"{label}：Markdown 发送被拒，改发纯文本：HTTP {status} code={data.get('code', '')} "
                               f"{str(data.get('message', ''))[:120]}")
             status, data = await self._deliver(path, {"content": plain[:MAX_CONTENT], "msg_type": 0})
             if status is not None and status >= 400:
                 # 只记状态码、业务码和平台返回的说明，不记凭据、token 和请求 URL
-                self.ctx.log_error(f"QQ 推送失败：HTTP {status} code={data.get('code', '')} "
+                self.ctx.log_error(f"QQ 推送失败（{label}）：HTTP {status} code={data.get('code', '')} "
                                    f"{str(data.get('message', ''))[:200]}")
         except Exception as exc:  # noqa: BLE001
-            self.ctx.log_error(f"QQ 推送失败：{type(exc).__name__}")
+            self.ctx.log_error(f"QQ 推送失败（{label}）：{type(exc).__name__}")
 
     async def _deliver(self, path: str, body: dict[str, Any]) -> tuple[int | None, dict[str, Any]]:
         """发一次；token 过期（401 / 11244）时刷新后重试一次。返回 (HTTP 状态, 响应体)，拿不到 token 返回 (None, {})。"""
@@ -429,12 +433,16 @@ class QQNotify(BasePlugin):
             return status, data
         return None, {}
 
-    def _target_path(self) -> str | None:
-        if self.ctx.setting("target_type", "c2c") == "group":
-            gid = str(self.ctx.setting("group_openid") or "")
-            return f"/v2/groups/{gid}/messages" if gid else None
-        uid = str(self.ctx.setting("user_openid") or "")
-        return f"/v2/users/{uid}/messages" if uid else None
+    def _target_paths(self) -> list[tuple[str, str]]:
+        """配了哪个就发哪个：用户 openid → 私聊，群 openid → 群；两个都配了就两边都发。"""
+        out: list[tuple[str, str]] = []
+        uid = str(self.ctx.setting("user_openid") or "").strip()
+        gid = str(self.ctx.setting("group_openid") or "").strip()
+        if uid:
+            out.append(("私聊", f"/v2/users/{uid}/messages"))
+        if gid:
+            out.append(("群", f"/v2/groups/{gid}/messages"))
+        return out
 
     async def _token(self, *, force: bool = False) -> str | None:
         cached = await self.ctx.state.get("qq.token") or {}
