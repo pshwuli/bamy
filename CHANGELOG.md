@@ -6,6 +6,24 @@
 
 ---
 
+## [未发布]
+
+### 新增
+
+- 数据库迁移链（Alembic，`backend/bamy/migrations/`）：0001 基线、0002 旧库追平、0003 `orders.row_version`；启动时自动执行 `upgrade head`，Postgres 用 advisory lock 串行
+- 订单跨进程乐观锁：`orders.row_version` + ORM 版本条件更新，Postgres 读取时加行锁，冲突重读重试
+- 插件框架：后台服务（`services`）与受限 WebSocket（`ctx.ws`）；QQ 通知插件支持群内 @机器人 `/id` 获取群 ID，消息改为引用块 Markdown
+- 策略基类新增 `on_shutdown`：进程退出前先取消行情订阅再清仓
+- 全市场动量扫描 2.0：仅 U 本位永续、只做多、1 倍；买入前 4 道确认；交易所止损单随最高价上移；每轮扫描前对账；暂停、停止、退出都先平仓；最大持仓数可配
+
+### 变更
+
+- 测试目录 `tests/` 不再随仓库发布（已加入 `.gitignore`），下方 1.0.0 条目里提到的 `tests/backend/` 仅为当时的记录
+- 删除实例时已撤订单只清理没有成交的；重置模拟盘同时清理策略状态
+- `on_pause` / `on_stop` 回调超时由 10 秒提到 30 秒；下单前置校验放行 `pausing` 状态
+
+---
+
 ## [1.0.0] - 2026-10-16
 
 首个完整版：按 `DESIGN.md` 与 13 篇设计文档实现全部模块。
