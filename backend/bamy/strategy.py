@@ -112,6 +112,18 @@ class StrategyContext:
         """候选币的滚动窗口统计（如近 4 小时涨幅、最高价）：{symbol: {change_pct, high, low, open, last, quote_volume}}。"""
         return await self._engine.window_stats(list(symbols), window)
 
+    async def contract_meta(self) -> dict[str, dict[str, Any]]:
+        """U 本位合约元数据：{symbol: {status, contract_type, quote, underlying, onboard_ms}}；模拟行情源下为空。"""
+        return await self._engine.contract_meta()
+
+    async def position_mode(self) -> str | None:
+        """账号合约持仓模式：oneway / hedge（模拟盘为 hedge）。双向持仓下单必须带 position_side，单向持仓不能带。"""
+        return await self._engine.position_mode(self)
+
+    async def exchange_positions(self) -> list[dict[str, Any]]:
+        """交易所视角的合约持仓（实盘问交易所，模拟盘读模拟账户），用于启动和每轮对账。"""
+        return await self._engine.exchange_positions(self)
+
     # ---- 日志 ----
     def log(self, message: str, level: str = "info") -> None:
         self._engine.log(self.instance_id, level, str(message))
@@ -126,8 +138,11 @@ class StrategyContext:
         self.log(message, "error")
 
     # ---- 保护 ----
-    async def place_protection(self, side: str, amount: float, stop_price: float) -> OrderView:
-        return await self._engine.place_protection(self, side, amount, stop_price)
+    async def place_protection(self, side: str, amount: float, stop_price: float, *, symbol: str | None = None,
+                               position_side: str | None = None) -> OrderView:
+        """挂交易所止损单（reduce-only）。扫描类实例必须传 symbol；合约双向持仓时传 position_side。"""
+        return await self._engine.place_protection(self, side, amount, stop_price, symbol=symbol,
+                                                   position_side=position_side)
 
     async def cancel_protection(self, protection_id: str | int) -> Any:
         return await self._engine.cancel_protection(self, protection_id)

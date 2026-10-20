@@ -1368,6 +1368,25 @@ class Engine:
     async def window_stats(self, symbols: list[str], window: str) -> dict[str, dict[str, float]]:
         return await market.window_stats(symbols, window)
 
+    async def contract_meta(self) -> dict[str, dict[str, Any]]:
+        return await market.contract_meta()
+
+    async def position_mode(self, ctx) -> str | None:
+        """账号合约持仓模式：oneway / hedge；模拟盘按双向记账，返回 hedge；查不到返回 None。"""
+        if ctx.paper:
+            return "hedge"
+        async with session_scope() as db:
+            account = await db.get(Account, ctx.account_id)
+        return account.position_mode if account else None
+
+    async def exchange_positions(self, ctx) -> list[dict[str, Any]]:
+        """交易所视角的合约持仓：实盘问交易所，模拟盘读模拟账户。每项含 symbol/side/amount/entry_price。"""
+        if ctx.paper:
+            return await self.framework_positions(ctx.instance_id)
+        async with session_scope() as db:
+            client = await pool.get(await db.get(Account, ctx.account_id))
+        return await client.fetch_positions()
+
     def get_ticker(self, symbol: str) -> dict[str, Any] | None:
         tick = market.cached(symbol)
         return {k: v for k, v in tick.items() if k != "received_at"} if tick else None
@@ -1379,13 +1398,16 @@ class Engine:
         return await market.orderbook(symbol, depth)
 
     # ---- 保护中心（GuardHub） ----
-    async def place_protection(self, ctx, side: str, amount: float, stop_price: float) -> OrderView:
+    async def place_protection(self, ctx, side: str, amount: float, stop_price: float, *, symbol: str | None = None,
+                               position_side: str | None = None) -> OrderView:
         if ctx.paper:
             # 模拟盘：本地跟踪，触发价穿越后按市价成交
             return await self.place_order(ctx, side, amount, stop_price, "limit", source="guard", is_guard=True,
-                                          guard_type="stop_loss", stop_price=stop_price, reduce_only=True)
+                                          guard_type="stop_loss", stop_price=stop_price, reduce_only=True,
+                                          symbol=symbol, position_side=position_side)
         view = await self.place_order(ctx, side, amount, stop_price, "stop_market", source="guard", is_guard=True,
-                                      guard_type="stop_loss", stop_price=stop_price, reduce_only=True)
+                                      guard_type="stop_loss", stop_price=stop_price, reduce_only=True,
+                                      symbol=symbol, position_side=position_side)
         if view.status not in {"rejected", "failed"}:
             await self.push("guard.placed", {"instance_id": ctx.instance_id, "owner_id": getattr(ctx, "_owner_id", None),
                                              "account_id": ctx.account_id, "order_id": view.id})

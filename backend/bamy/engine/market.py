@@ -80,6 +80,21 @@ class MarketHub:
                 return {}
         return self._markets
 
+    async def contract_meta(self) -> dict[str, dict[str, Any]]:
+        """U 本位合约元数据：{symbol: {status, contract_type, quote, underlying, onboard_ms}}。
+
+        来自交易所 exchangeInfo 原始字段。模拟行情源没有这些字段时返回空 dict，调用方据此跳过过滤。
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for sym, m in (await self.markets("futures")).items():
+            info = m.get("info") or {}
+            if not info.get("contractType"):
+                continue
+            out[sym] = {"status": info.get("status"), "contract_type": info.get("contractType"),
+                        "quote": info.get("quoteAsset"), "underlying": info.get("underlyingType"),
+                        "onboard_ms": int(info.get("onboardDate") or 0)}
+        return out
+
     async def is_valid_symbol(self, symbol: str) -> bool:
         if is_scan_symbol(symbol):
             return True

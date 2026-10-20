@@ -290,7 +290,10 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
         otype = type_
         if type_ in {"stop_market", "stop_limit"}:
             otype = "STOP_MARKET" if type_ == "stop_market" else "STOP"
-            params["stopPrice"] = stop_price
+            try:
+                params["stopPrice"] = float(self.client.price_to_precision(symbol, stop_price))
+            except Exception as exc:  # noqa: BLE001
+                raise ExchangeError(f"触发价精度不合法：{exc}", 42241, rejected=True) from exc
         try:
             raw = await self.client.create_order(symbol, otype, side, amount, price, params)
         except ccxt.InsufficientFunds as exc:
