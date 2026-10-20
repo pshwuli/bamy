@@ -19,6 +19,7 @@
 
 ctx.state 键：
   qq.token  {token, expires_at}   access_token 缓存，提前 60 秒视为过期
+  qq.pos    {"实例id|交易对": {qty, cost}}   各币种的持仓数量和总成本，用来在平仓通知里算收益
 """
 from __future__ import annotations
 
@@ -81,6 +82,29 @@ def _fmt(x: Decimal | None) -> str | None:
     return f"{x:,.8f}".rstrip("0").rstrip(".") or "0"
 
 
+def apply_fill(entry: dict[str, str] | None, opening: bool, sign: int, qty: Decimal, price: Decimal):
+    """按同一实例、同一交易对累计持仓成本，平仓时算这一段的收益。
+
+    entry = {"qty": 持仓数量, "cost": 总成本}（字符串，避免浮点误差）；sign：多 1 / 空 -1。
+    返回 (新的 entry 或 None 表示已清空, 平仓结果 {avg, pnl, pct} 或 None)。
+    开仓：数量和成本累加（加仓取加权均价）。平仓：按均价结算平掉的那部分，平不满则保留剩余。
+    没有开仓记录（比如插件装上之前就买了）时给不出收益，返回 None。
+    """
+    held = Decimal(entry["qty"]) if entry else Decimal(0)
+    cost = Decimal(entry["cost"]) if entry else Decimal(0)
+    if opening:
+        return {"qty": str(held + qty), "cost": str(cost + qty * price)}, None
+    if held <= 0:
+        return None, None
+    avg = cost / held
+    closed = min(qty, held)
+    pnl = (price - avg) * closed * sign
+    pct = (price / avg - 1) * 100 * sign if avg else None
+    left = held - closed
+    new = {"qty": str(left), "cost": str(avg * left)} if left > Decimal("1e-12") else None
+    return new, {"avg": avg, "pnl": pnl, "pct": pct}
+
+
 def _clip(v: Any, limit: int = 120) -> str | None:
     s = " ".join(str(v or "").split())
     return (s[:limit] + "…") if len(s) > limit else (s or None)
@@ -115,6 +139,8 @@ class QQNotify(BasePlugin):
         super().__init__()
         self._bind: dict[str, str] | None = None     # 扫码中的 {task_id, key}，只放内存
         self._names: dict[Any, tuple[str, float]] = {}   # 实例 id → (显示名, 过期时间)，只放内存
+        self._pos_lock = asyncio.Lock()                  # 买卖成交事件可能并发，持仓成本的读改写要串行
+        self._seen: dict[Any, float] = {}                # 已处理的成交订单号，防止同一笔事件重复计入
         self._relogin = False                            # 网关报会话无效后，下次连接强制换新 token
 
     async def on_bind(self) -> None:
@@ -283,9 +309,43 @@ class QQNotify(BasePlugin):
         rows = [("策略", await self._name(d)), ("交易对", d.get("symbol")), ("操作", action),
                 ("数量", _fmt(qty)), ("成交价", _fmt(price)),
                 ("成交额", f"{_fmt(total)} USDT" if total is not None else None)]
+        result = await self._track(d, side, pos, qty, price)
+        if result is not None:
+            pnl, pct = result["pnl"], result["pct"]
+            rows.append(("买入均价", _fmt(result["avg"])))
+            rows.append(("本次收益", f"{pnl:+,.4f} USDT" + (f"（{pct:+.2f}%）" if pct is not None else "")))
+            rows.append(("说明", "收益按买入均价到卖出价计算，未扣手续费"))
         if d.get("is_guard") and d.get("reason"):
             rows.append(("说明", _clip(d.get("reason"))))
         await self._send("info", "成交通知", rows)
+
+    async def _track(self, d: dict[str, Any], side: str, pos: Any, qty: Decimal | None, price: Decimal | None):
+        """记录/结算同一个实例、同一个交易对的持仓成本，平仓时返回收益；其余情况返回 None。"""
+        iid, symbol = d.get("instance_id"), d.get("symbol")
+        if iid is None or not symbol or qty is None or price is None or qty <= 0 or price <= 0:
+            return None
+        if pos in ("long", "short"):
+            sign = 1 if pos == "long" else -1
+            opening = (side == "buy") == (pos == "long")
+        else:
+            sign, opening = 1, side == "buy"
+        key = f"{iid}|{symbol}"
+        async with self._pos_lock:
+            oid = d.get("order_id")
+            if oid is not None:
+                now = time.time()
+                self._seen = {k: t for k, t in self._seen.items() if now - t < 3600}
+                if oid in self._seen:
+                    return None
+                self._seen[oid] = now
+            book = await self.ctx.state.get("qq.pos") or {}
+            new, result = apply_fill(book.get(key), opening, sign, qty, price)
+            if new is None:
+                book.pop(key, None)
+            else:
+                book[key] = new
+            await self.ctx.state.set("qq.pos", book)
+        return result
 
     async def on_error(self, event: Any) -> None:
         d = _data(event)
