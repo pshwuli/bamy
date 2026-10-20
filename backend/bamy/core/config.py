@@ -61,6 +61,7 @@ class Settings(BaseSettings):
         "instance.auto_recover": True,
         "order.max_per_minute": 60,
         "order.max_per_day": 1000,
+        "order.purge_canceled_on_close": True,
         "risk.max_daily_loss": 0.1,
         "risk.max_drawdown": 0.3,
         "paper.default_fee_rate": 0.001,
