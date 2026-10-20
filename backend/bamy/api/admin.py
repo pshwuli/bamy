@@ -464,25 +464,20 @@ async def view(token: str, request: Request, db=Depends(get_session)):
             data |= {"equity": equity, "return_rate": round((equity - initial) / initial, 6) if initial else None,
                      "equity_curve": [{"t": iso(x.snapshot_at), "v": float(x.equity)} for x in snaps[-500:]]}
         else:
-            # 实盘：有快照取最新快照；没有快照（新实例、从没写过快照）就按实时盈亏口径算，不能整段不返回
-            if not snaps:
-                from bamy.services.live_equity import backfill_capital, live_pnl
+            # 实盘：权益和盈亏始终按实时口径算（和实例详情页一致）；快照只用来画曲线。
+            # 以前只在有快照时才返回权益，没写过快照的实盘实例分享页就整段为空
+            from bamy.services.live_equity import backfill_capital, live_pnl
 
-                lp = await backfill_capital(db, inst, await live_pnl(db, inst))
-                if lp["equity"] is not None:
-                    initial = lp["initial"]
-                    data |= {"equity": lp["equity"],
-                             "return_rate": round(lp["pnl"] / initial, 6) if initial else None,
-                             "equity_curve": [{"t": iso(datetime.utcnow()), "v": lp["equity"]}]}
-                else:
-                    data |= {"pnl": lp["pnl"]}
-            if snaps:
-                latest = snaps[-1]
-                equity = float(latest.equity)
-                initial = float(latest.balance) - float(latest.realized_pnl or 0) if latest.balance and latest.realized_pnl else None
-                data |= {"equity": equity,
-                         "return_rate": round((equity - initial) / initial, 6) if initial and initial > 0 else None,
-                         "equity_curve": [{"t": iso(x.snapshot_at), "v": float(x.equity)} for x in snaps[-500:]]}
+            lp = await backfill_capital(db, inst, await live_pnl(db, inst))
+            curve = [{"t": iso(x.snapshot_at), "v": float(x.equity)} for x in snaps[-500:]]
+            data["pnl"] = lp["pnl"]
+            if lp["equity"] is not None:
+                initial = lp["initial"]
+                curve.append({"t": iso(datetime.utcnow()), "v": lp["equity"]})
+                data |= {"equity": lp["equity"], "return_rate": round(lp["pnl"] / initial, 6) if initial else None,
+                         "equity_curve": curve}
+            elif snaps:
+                data |= {"equity": float(snaps[-1].equity), "return_rate": None, "equity_curve": curve}
     if s.show_positions:
         data["positions"] = _jsonable(await engine.framework_positions(inst.id))
     if s.show_orders:

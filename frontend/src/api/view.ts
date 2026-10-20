@@ -20,10 +20,14 @@ export interface ViewData {
 }
 
 export const viewApi = {
-  get: (token: string) =>
-    http.get<ViewData>(P.share.view(token), undefined, {
+  get: async (token: string) => {
+    const d = await http.get<ViewData>(P.share.view(token), undefined, {
       skipAuth: true,
       silent: true,
       headers: { Accept: 'application/json' },
-    }),
+    })
+    // 拿到的不是对象（比如被缓存层换成了 HTML 页面）就按加载失败处理，不要渲染出一个全是 "-" 的空页面
+    if (!d || typeof d !== 'object' || !('instance_name' in d)) throw new Error('invalid share response')
+    return d
+  },
 }

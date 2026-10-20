@@ -102,7 +102,8 @@ export const P = {
   share: {
     list: '/api/share-tokens',
     one: (id: Id) => `/api/share-tokens/${e(id)}`,
-    view: (token: string) => `/view/${e(token)}`,
+    // 数据走 /api/view：这个地址只出 JSON。/view/{token} 同一路径既出页面又出数据，经过缓存或穿透层时可能把页面当数据返回
+    view: (token: string) => `/api/view/${e(token)}`,
   },
 
   admin: {
