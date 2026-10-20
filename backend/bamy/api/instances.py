@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from bamy.api.deps import Ctx, Page, current, iso, num, own_account, own_instance, paging
 from bamy.api.serializers import instance_out, order_out
@@ -553,8 +553,11 @@ async def delete_instance(instance_id: int, ctx: Ctx = Depends(current)):
 
     # 级联清理关联数据
     # 删除订单（保留已成交的订单作为历史记录，只删除未完成的）
-    await ctx.db.execute(delete(Order).where(Order.instance_id == inst.id,
-                                             Order.status.in_(("submitted", "partial", "canceled", "unknown"))))
+    # 已撤订单只删没有成交的：撤单前可能已经部分成交，那是真实的成交记录，不能跟着删
+    await ctx.db.execute(delete(Order).where(
+        Order.instance_id == inst.id,
+        or_(Order.status.in_(("submitted", "partial", "unknown")),
+            and_(Order.status == "canceled", Order.filled_amount == 0))))
     # 删除持仓快照
     await ctx.db.execute(delete(PositionSnapshot).where(PositionSnapshot.instance_id == inst.id))
     # 删除模拟盘账户
