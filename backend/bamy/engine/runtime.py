@@ -37,6 +37,7 @@ from bamy.extensions.registry import registry
 from bamy.extensions.schema import SchemaError, decrypt_secrets, mask_secrets, validate
 from bamy.services import system_config
 from bamy.services.audit import write_audit
+from bamy.services.reconcile_diffs import Diff, record_diffs, spot_balance_diffs
 
 log = logging.getLogger("bamy.engine")
 HEARTBEAT_SEC = 900   # 每个运行中实例至少 15 分钟写一行"运行中"日志
@@ -1622,27 +1623,9 @@ class Engine:
             except Exception as exc:  # noqa: BLE001
                 await self.push("reconcile.error", {"account_id": account_id, "error": f"获取合约持仓失败: {exc}"})
 
+        # 现货余额比较：合约账号的余额是保证金、USDT 等计价资产是现金，都不算持仓
+        items: list[Diff] = spot_balance_diffs(expected, balances, futures_account=account.market_type == "futures")
         async with session_scope() as db:
-            for base, qty in expected.items():
-                actual = float(balances.get(base, 0.0))
-                # 双向检测：交易所少于本地 或 交易所多于本地
-                if abs(actual - qty) > 1e-8:  # 超出容差即记录
-                    if actual < qty:
-                        diff_type = "position_short"  # 交易所少于本地
-                    else:
-                        diff_type = "position_extra"  # 交易所多于本地
-                    diffs += 1
-                    db.add(ReconcileDiff(account_id=account_id, diff_type=diff_type,
-                                         expected=json.dumps({"asset": base, "amount": qty}),
-                                         actual=json.dumps({"asset": base, "amount": actual})))
-            # 检查交易所有但本地没有的币（完全新增的持仓）
-            for base, actual_qty in balances.items():
-                if base not in expected and float(actual_qty) > 1e-8:
-                    diffs += 1
-                    db.add(ReconcileDiff(account_id=account_id, diff_type="position_extra",
-                                         expected=json.dumps({"asset": base, "amount": 0.0}),
-                                         actual=json.dumps({"asset": base, "amount": float(actual_qty)})))
-
             # 对账合约持仓
             for sym, exp_sides in futures_expected.items():
                 act_sides = futures_actual.get(sym, {"long": 0.0, "short": 0.0})
@@ -1651,22 +1634,20 @@ class Engine:
                     act_amt = act_sides[side]
                     if abs(exp_amt - act_amt) > 1e-8:
                         diff_type = f"futures_{side}_short" if act_amt < exp_amt else f"futures_{side}_extra"
-                        diffs += 1
-                        db.add(ReconcileDiff(account_id=account_id, diff_type=diff_type,
-                                             expected=json.dumps({"symbol": sym, "side": side, "amount": exp_amt}),
-                                             actual=json.dumps({"symbol": sym, "side": side, "amount": act_amt})))
+                        items.append((diff_type, {"symbol": sym, "side": side, "amount": exp_amt},
+                                      {"symbol": sym, "side": side, "amount": act_amt}))
 
             # 检查交易所有但本地没有的合约持仓
             for sym, act_sides in futures_actual.items():
                 if sym not in futures_expected:
                     for side, act_amt in act_sides.items():
                         if abs(act_amt) > 1e-8:
-                            diffs += 1
-                            db.add(ReconcileDiff(account_id=account_id, diff_type=f"futures_{side}_extra",
-                                                 expected=json.dumps({"symbol": sym, "side": side, "amount": 0.0}),
-                                                 actual=json.dumps({"symbol": sym, "side": side, "amount": act_amt})))
+                            items.append((f"futures_{side}_extra", {"symbol": sym, "side": side, "amount": 0.0},
+                                          {"symbol": sym, "side": side, "amount": act_amt}))
 
-            await db.commit()
+            # 同一对象的未解决差异只更新原记录，不再每轮对账新增一条
+            await record_diffs(db, account_id, items)
+            diffs += len(items)
         if diffs:
             await self.push("reconcile.diff", {"account_id": account_id, "owner_id": account.owner_id, "count": diffs})
         await self.push("reconcile.completed", {"account_id": account_id, "owner_id": account.owner_id,
