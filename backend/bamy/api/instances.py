@@ -554,7 +554,7 @@ async def delete_instance(instance_id: int, ctx: Ctx = Depends(current)):
     # 级联清理关联数据
     # 删除订单（保留已成交的订单作为历史记录，只删除未完成的）
     await ctx.db.execute(delete(Order).where(Order.instance_id == inst.id,
-                                             Order.status.in_(("submitted", "partial", "cancelled", "unknown"))))
+                                             Order.status.in_(("submitted", "partial", "canceled", "unknown"))))
     # 删除持仓快照
     await ctx.db.execute(delete(PositionSnapshot).where(PositionSnapshot.instance_id == inst.id))
     # 删除模拟盘账户
@@ -566,8 +566,6 @@ async def delete_instance(instance_id: int, ctx: Ctx = Depends(current)):
     # 删除策略状态（ms.pos / ms.cool / ui.status 等）——不清理会永久残留，
     # 若实例 id 被复用或将来支持恢复实例，会读到不存在的虚拟持仓
     await ctx.db.execute(delete(InstanceState).where(InstanceState.instance_id == inst.id))
-
-
     await ctx.db.commit()
     engine._books.pop(inst.id, None)
     await write_audit(ctx.db, action="instance.delete", target_type="instance", target_id=inst.id, **ctx.audit_kw())
@@ -587,6 +585,8 @@ async def reset_paper(instance_id: int, body: ResetPaperIn, ctx: Ctx = Depends(c
     if inst.status not in {"stopped", "error", "created"}:
         raise ApiError(40903)
     await ctx.db.execute(delete(PaperAccount).where(PaperAccount.instance_id == inst.id))
+    # 策略状态（ms.pos / ms.cool 等）记的是旧模拟账户里的虚拟持仓，账户清空后不清掉就会对不上
+    await ctx.db.execute(delete(InstanceState).where(InstanceState.instance_id == inst.id))
     if not body.keep_orders:
         await ctx.db.execute(delete(Order).where(Order.instance_id == inst.id))
     if not body.keep_snapshots:
