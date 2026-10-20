@@ -44,6 +44,21 @@ class ExchangeOrder:
     fee_currency: str | None = None
 
 
+def sum_trade_fees(trades: list[dict[str, Any]]) -> tuple[float, str | None]:
+    """成交明细的手续费合计。多币种时取 USDT 那部分，其它币种折算不了，不混加。"""
+    by_cur: dict[str, float] = {}
+    for t in trades:
+        fee = t.get("fee") or {}
+        cost = _f(fee.get("cost"))
+        if cost:
+            cur = str(fee.get("currency") or "").upper()
+            by_cur[cur] = by_cur.get(cur, 0.0) + cost
+    if not by_cur:
+        return 0.0, None
+    cur = "USDT" if "USDT" in by_cur else next(iter(by_cur))
+    return by_cur[cur], (cur or None)
+
+
 class BinanceSpotAdapter:
     """一个账号一个实例，独立限频（《账号模块设计》隔离一节）。"""
 
@@ -204,6 +219,11 @@ class BinanceSpotAdapter:
         if self.conditional_orders:
             raw = [*raw, *await self.client.fetch_open_orders(symbol, None, None, {"trigger": True})]
         return [_parse_order(o, o.get("clientOrderId")) for o in raw]
+
+    async def fetch_order_fee(self, exchange_order_id: str, symbol: str) -> tuple[float, str | None]:
+        """按订单号汇总成交明细里的手续费。币安下单、查单的返回里都不带手续费，只能事后查成交明细。"""
+        trades = await self.client.fetch_my_trades(symbol, None, None, {"orderId": exchange_order_id})
+        return sum_trade_fees(trades)
 
 
 class BinanceFuturesAdapter(BinanceSpotAdapter):

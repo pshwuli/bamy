@@ -940,7 +940,35 @@ class Engine:
         view.reason = o.reason
         return view
 
+    async def _with_fee(self, order_id: int, result: ExchangeOrder) -> ExchangeOrder:
+        """币安下单、查单返回里都没有手续费：订单成交后按订单号查一次成交明细补上。
+
+        失败只记日志、不影响状态收敛，这笔手续费就保持为 0。模拟盘的手续费由撮合引擎直接给出，不走这里。
+        """
+        if result.status != "filled" or result.fee:
+            return result
+        try:
+            async with session_scope() as db:
+                o = await db.get(Order, order_id)
+                if o is None or o.account_id is None or o.fee:
+                    return result
+                account = await db.get(Account, o.account_id)
+                xid, symbol = result.exchange_order_id or o.exchange_order_id, o.symbol
+            if not xid:
+                return result
+            client = await pool.get(account)
+            fee, cur = await asyncio.wait_for(client.fetch_order_fee(str(xid), symbol), timeout=8)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("补查订单手续费失败 order=%s：%s", order_id, type(exc).__name__)
+            return result
+        if not fee:
+            return result
+        from dataclasses import replace
+
+        return replace(result, fee=fee, fee_currency=cur)
+
     async def _apply_result(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
+        result = await self._with_fee(order_id, result)
         async with self.order_lock(order_id):
             for attempt in range(5):
                 try:
@@ -1954,6 +1982,7 @@ def _event(o: Order) -> dict[str, Any]:
             "owner_id": o.owner_id, "account_id": o.account_id, "symbol": o.symbol, "side": o.side,
             "position_side": o.position_side, "type": o.type, "amount": float(o.amount), "price": _f(o.price),
             "filled_amount": float(o.filled_amount or 0), "filled_price": _f(o.filled_price),
+            "fee": float(o.fee or 0), "fee_currency": o.fee_currency,
             "status": o.status, "source": o.source, "is_guard": bool(o.is_guard), "reason": o.reason}
 
 
