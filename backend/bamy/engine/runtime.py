@@ -393,6 +393,15 @@ class Engine:
         # 实盘：启动前对账
         if account is not None:
             await self.reconcile_account(account.id, reason="start")
+            # 没填本金的实盘实例：首次启动按账号当前 USDT 余额记一次基准（失败不影响启动）
+            try:
+                from bamy.services.live_equity import snapshot_auto_capital
+
+                client = await pool.get(account)
+                async with session_scope() as db:
+                    await snapshot_auto_capital(db, await db.get(Instance, instance_id), client)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("记录实例 %s 的基准本金失败：%s", instance_id, exc)
         # 检查点：instance.before_start
         res = await plugin_hub.intercept("instance.before_start",
                                          {"instance": snapshot, "account": acct_view,
