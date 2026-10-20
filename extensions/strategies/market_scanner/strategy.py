@@ -443,7 +443,13 @@ class MarketScannerStrategy(BaseStrategy):
     # ------------------------------------------------------------------ 回调与能力
     async def on_order(self, order: OrderView) -> None:
         if order.status in {"rejected", "failed"}:
-            self.ctx.log_warn(f"订单 {order.symbol} {order.side} {order.status}：{order.reason}")
+            self.ctx.log_warn(f"订单 {order.symbol} {order.side} {order.status}：{order.reason or '交易所未返回原因'}")
+            # 止损单被判失败：清掉本地记的 guard_id，否则 _ensure_guard 以为已有保护，永远不会重挂
+            pos = self.pos.get(order.symbol)
+            if order.is_guard and pos is not None and str(pos.get("guard_id")) == str(order.id):
+                pos["guard_id"], pos["guard_stop"] = None, 0.0
+                await self._save()
+                await self._ensure_guard(order.symbol)
             return
         pos = self.pos.get(order.symbol)
         # 交易所止损单触发：立刻记账，不等下一轮对账

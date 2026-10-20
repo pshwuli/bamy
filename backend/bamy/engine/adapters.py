@@ -315,8 +315,19 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
         return _parse_order(raw, client_order_id)
 
     async def fetch_order_by_client_id(self, client_order_id: str, symbol: str) -> ExchangeOrder:
-        raw = await self.client.fetch_order(None, symbol, {"origClientOrderId": client_order_id})
+        try:
+            raw = await self.client.fetch_order(None, symbol, {"origClientOrderId": client_order_id})
+        except ccxt.OrderNotFound:
+            # 止损单（STOP_MARKET）在币安合约走条件单接口，普通查单查不到，要带 trigger 再查一次
+            raw = await self.client.fetch_order(None, symbol, {"clientAlgoId": client_order_id, "trigger": True})
         return _parse_order(raw, client_order_id)
+
+    async def cancel_order(self, exchange_order_id: str, symbol: str) -> ExchangeOrder:
+        try:
+            raw = await self.client.cancel_order(exchange_order_id, symbol)
+        except ccxt.OrderNotFound:
+            raw = await self.client.cancel_order(exchange_order_id, symbol, {"trigger": True})
+        return _parse_order(raw, raw.get("clientOrderId"))
 
 
 def make_adapter(api_key: str, api_secret: str, *, env: str = "mainnet", readonly: bool = False,
@@ -343,6 +354,29 @@ STATUS_MAP = {
 }
 
 
+def _fill_price(raw: dict[str, Any]) -> float | None:
+    """成交均价。
+
+    ★ 币安市价单的创建响应里 price 恒为 "0.0000000"、average 为 None，
+      只有 executedQty 和 cumQuote，所以必须用 cumQuote/executedQty 回算，
+      否则 filled_price 永远是空，成交通知里成交价/成交额都显示 None。
+    """
+    for key in ("average", "avgPrice"):
+        v = _f(raw.get(key))
+        if v:
+            return v
+    filled = _f(raw.get("filled")) or 0.0
+    info = raw.get("info") or {}
+    # 合约：cumQuote = 累计成交额；现货也用 cumQuote
+    quote = _f(info.get("cumQuote")) or _f(info.get("cumQuoteQty")) or _f(raw.get("cost"))
+    qty = _f(info.get("executedQty")) or filled
+    if quote and qty:
+        return quote / qty
+    p = _f(raw.get("price"))
+    # price 在市价单里是 0，0 不代表成交价，不能当成有效值
+    return p if p else None
+
+
 def _parse_order(raw: dict[str, Any], client_order_id: str | None) -> ExchangeOrder:
     status = STATUS_MAP.get(str(raw.get("status") or "").lower())
     if status is None:
@@ -351,7 +385,7 @@ def _parse_order(raw: dict[str, Any], client_order_id: str | None) -> ExchangeOr
         exchange_order_id=str(raw.get("id")) if raw.get("id") is not None else None,
         status=status,
         filled_amount=float(raw.get("filled") or 0),
-        filled_price=_f(raw.get("average")) or _f(raw.get("price")),
+        filled_price=_fill_price(raw),
         fee=_sum_fee(raw),
         raw=raw,
         client_order_id=client_order_id,

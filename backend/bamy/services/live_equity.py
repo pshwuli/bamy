@@ -31,6 +31,7 @@ def live_capital(inst: Instance) -> float | None:
         v = float(v)
     except (TypeError, ValueError):
         return None
+    # ★ 用户手动填了正数就用用户值；没填（或填 0/负数）时走 live_pnl 的交易所自动同步
     return v if v > 0 else None
 
 
@@ -86,5 +87,20 @@ async def live_pnl(db: AsyncSession, inst: Instance) -> dict[str, Any]:
         unrealized += (float(tick["price"]) - avg) * net
     pnl = realized + unrealized - fees
     initial = live_capital(inst)
+    if initial is None and not inst.paper:
+        # ★ 实盘没手动填本金 → 自动从交易所同步 USDT 总余额。
+        #   这就是用户要的「金额直接同步」，不用每次建实例时手动填。
+        try:
+            from bamy.db.models import Account
+            from bamy.engine.client_pool import pool
+            account = (await db.execute(select(Account).where(Account.id == inst.account_id))).scalar_one_or_none()
+            if account is not None:
+                client = await pool.get(account)
+                for b in await client.fetch_balance():
+                    if b.asset == "USDT":
+                        initial = float(b.total or 0)
+                        break
+        except Exception:  # noqa: BLE001 - 同步失败就退回 None，页面只显示盈亏
+            initial = None
     return {"initial": initial, "equity": initial + pnl if initial else None, "realized": realized - fees,
             "unrealized": unrealized, "pnl": pnl, "fees": fees, "fee_other": fee_other}
