@@ -38,6 +38,7 @@ from bamy.extensions.registry import registry
 from bamy.extensions.schema import SchemaError, decrypt_secrets, mask_secrets, validate
 from bamy.services import system_config
 from bamy.services.audit import write_audit
+from bamy.services.order_purge import purgeable_ids
 from bamy.services.reconcile_diffs import Diff, record_diffs, spot_balance_diffs
 
 log = logging.getLogger("bamy.engine")
@@ -941,15 +942,51 @@ class Engine:
         return view
 
     async def _apply_result(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
+        view: OrderView | None = None
         async with self.order_lock(order_id):
+            async with session_scope() as db:
+                gone = await db.scalar(select(Order.id).where(Order.id == order_id)) is None
+            if gone:
+                # 已被平仓后的清理删掉（只会是已撤销的空单）：迟到的事件不再处理，也不能抛错，
+                # 否则用户数据流会断线重连
+                return OrderView(id=order_id, status="canceled", reason="订单记录已清理")
             for attempt in range(5):
                 try:
                     # 冲突发生在 commit，那时还没推任何事件，整体重来是安全的
-                    return await self._apply_result_locked(order_id, result, submitted=submitted)
+                    view = await self._apply_result_locked(order_id, result, submitted=submitted)
+                    break
                 except StaleDataError:
                     if attempt == 4:
                         raise
                     await asyncio.sleep(0.05 * (attempt + 1))
+        if view is not None and view.status in {"filled", "canceled"}:
+            await self._purge_closed_cycle(order_id)
+        return view
+
+    async def _purge_closed_cycle(self, order_id: int) -> None:
+        """仓位平掉之后，清理这一段持仓期间已撤销、没有成交的订单（止损单反复撤挂会刷屏）。
+
+        持仓没平时 purgeable_ids 返回空，什么都不删；失败只记日志，不影响订单收敛。
+        """
+        if not system_config.get("order.purge_canceled_on_close", True):
+            return
+        try:
+            async with session_scope() as db:
+                head = (await db.execute(select(Order.instance_id, Order.symbol).where(Order.id == order_id))).first()
+                inst = await db.get(Instance, head.instance_id) if head is not None else None
+                if head is None or inst is None:
+                    return
+                rows = (await db.execute(select(Order.id, Order.side, Order.position_side, Order.status,
+                                                Order.filled_amount).where(
+                    Order.instance_id == head.instance_id, Order.symbol == head.symbol))).all()
+                ids = purgeable_ids(rows, futures=inst.market_type == "futures")
+                for i in range(0, len(ids), 500):
+                    await db.execute(delete(Order).where(Order.id.in_(ids[i:i + 500])))
+                await db.commit()
+            if ids:
+                self.log(head.instance_id, "info", f"平仓后清理 {head.symbol} 持仓期间已撤销的空单 {len(ids)} 条")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("清理已撤销空单失败 order=%s：%s", order_id, type(exc).__name__)
 
     async def _apply_result_locked(self, order_id: int, result: ExchangeOrder, *, submitted: bool = False) -> OrderView:
         """按单调状态和成交量收敛并发返回、用户流和对账事件。"""
