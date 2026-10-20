@@ -110,6 +110,7 @@ async def shutdown() -> None:
     from bamy.engine.userstream import user_stream
 
     engine.ready = False
+    await engine.close_for_shutdown()      # 先清仓：行情、连接池、用户流都还在
     await plugin_hub.stop_all()
     await scheduler.stop()
     await user_stream.close()

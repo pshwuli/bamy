@@ -131,6 +131,10 @@ class BaseStrategy(LoggerMixin):
     async def on_pause(self) -> None:
         return None
 
+    async def on_shutdown(self) -> None:
+        """进程退出（SIGTERM）前调用，此时行情订阅已取消。需要「退出前清仓」的策略重写它；默认什么都不做。"""
+        return None
+
     async def on_resume(self) -> None:
         return None
 

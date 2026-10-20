@@ -457,6 +457,10 @@ class MarketScannerStrategy(BaseStrategy):
         """引擎暂停会取消行情订阅，程序不再看盘，所以暂停前必须先平掉全部持仓。"""
         await self._flatten("暂停")
 
+    async def on_shutdown(self) -> None:
+        """进程退出前清仓：程序一停就没人看盘，持仓留着只会越亏越多。"""
+        await self._flatten("关机")
+
     async def on_stop(self) -> None:
         if self.scan_task is not None:
             self.scan_task.cancel()
@@ -465,7 +469,7 @@ class MarketScannerStrategy(BaseStrategy):
 
     async def _flatten(self, why: str) -> None:
         """平掉全部持仓（最多试 3 次）。平不掉的会写错误日志，交易所上的止损单保持有效。"""
-        if self.scan_task is not None and why == "暂停":
+        if self.scan_task is not None:
             self.scan_task.cancel()
             self.scan_task = None
         self.pending = None

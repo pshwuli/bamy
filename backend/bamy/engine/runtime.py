@@ -44,6 +44,7 @@ TRANSITIONAL = {"starting", "pausing", "resuming", "stopping"}
 STATE_LIMIT = 65536
 START_TIMEOUT = 30
 STOP_TIMEOUT = 30
+SHUTDOWN_TIMEOUT = 45   # 进程退出前清仓的总时限；容器和脚本给的退出宽限期是 60 秒
 MAX_CONSECUTIVE_ERRORS = 5
 
 
@@ -531,7 +532,7 @@ class Engine:
             self._unsubscribe(run)
             run.paused = True
             try:
-                await asyncio.wait_for(run.strategy.on_pause(), timeout=10)
+                await asyncio.wait_for(run.strategy.on_pause(), timeout=STOP_TIMEOUT)
             except Exception as exc:  # noqa: BLE001
                 self.log(instance_id, "warn", f"on_pause 异常：{exc}")
             inst = await self._set_status(instance_id, "paused")
@@ -585,7 +586,7 @@ class Engine:
             if run is not None:
                 self._unsubscribe(run)
                 try:
-                    await asyncio.wait_for(run.strategy.on_stop(), timeout=10)
+                    await asyncio.wait_for(run.strategy.on_stop(), timeout=STOP_TIMEOUT)
                 except Exception as exc:  # noqa: BLE001 - on_stop 异常不阻塞停止
                     self.log(instance_id, "warn", f"on_stop 异常：{exc}")
                 if stop_action == "close":
@@ -1809,6 +1810,30 @@ class Engine:
             await write_audit(db, action="instance.start", target_type="system", source="system",
                               new_value={"crash_recovery": True, "recovered": recovered, "failed": failed})
         return {"recovered": recovered, "failed": failed, "skipped": []}
+
+    async def close_for_shutdown(self) -> None:
+        """进程退出前：先取消行情订阅，再让每个运行中的实例并行清仓，清完才继续关机。
+
+        只保存状态不清仓的话，程序一停就没人看盘，持仓会一直亏下去。
+        """
+        runs = list(self.running.items())
+        if not runs:
+            return
+
+        async def one(iid: int, run: Running) -> None:
+            async with self.op_lock(iid):
+                if self.running.get(iid) is not run:
+                    return
+                self._unsubscribe(run)
+                try:
+                    await run.strategy.on_shutdown()
+                except Exception as exc:  # noqa: BLE001 - 一个实例清仓异常不能挡住其他实例
+                    self.log(iid, "error", f"关机清仓异常：{exc}")
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*(one(i, r) for i, r in runs)), timeout=SHUTDOWN_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.error("关机清仓超过 %s 秒，部分实例可能没平完", SHUTDOWN_TIMEOUT)
 
     async def shutdown(self) -> None:
         """优雅停机：保存状态但不改 enabled，下次启动可恢复。"""
