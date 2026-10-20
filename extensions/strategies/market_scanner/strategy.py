@@ -432,6 +432,12 @@ class MarketScannerStrategy(BaseStrategy):
             self.ctx.log_warn(f"{sym} {reason}，平仓失败：{msg}")
             if any(k in msg for k in ("持仓不足", "42244", "没有可平", "position is zero")):
                 self._forget(sym)                                    # 仓位已不在（止损单已触发），不再跟踪
+            elif any(k in msg for k in ("-2022", "ReduceOnly Order is rejected")):
+                # 币安对"已经没有仓位"的减仓单就返回这个错：先和交易所核对，仓位没了就清掉本地记录，
+                # 还在才退避，免得止损单已经卖掉了，本地还空等 5 分钟
+                await self._reconcile()
+                if sym in self.pos:
+                    self.retry_at[sym] = time.time() + 300
             elif any(k in msg for k in ("-1021", "-1003", "429", "timeout", "Timeout", "Connection")):
                 self.retry_at[sym] = time.time() + 60                 # 临时错误：退避 1 分钟
             else:
