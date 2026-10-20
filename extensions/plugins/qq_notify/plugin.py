@@ -82,27 +82,35 @@ def _fmt(x: Decimal | None) -> str | None:
     return f"{x:,.8f}".rstrip("0").rstrip(".") or "0"
 
 
-def apply_fill(entry: dict[str, str] | None, opening: bool, sign: int, qty: Decimal, price: Decimal):
-    """按同一实例、同一交易对累计持仓成本，平仓时算这一段的收益。
+def apply_fill(entry: dict[str, str] | None, opening: bool, sign: int, qty: Decimal, price: Decimal,
+               fee: Decimal = Decimal(0)):
+    """按同一实例、同一交易对累计持仓成本，平仓时算这一段的收益（扣手续费）。
 
-    entry = {"qty": 持仓数量, "cost": 总成本}（字符串，避免浮点误差）；sign：多 1 / 空 -1。
-    返回 (新的 entry 或 None 表示已清空, 平仓结果 {avg, pnl, pct} 或 None)。
-    开仓：数量和成本累加（加仓取加权均价）。平仓：按均价结算平掉的那部分，平不满则保留剩余。
+    entry = {"qty": 持仓数量, "cost": 总成本, "fee": 开仓手续费合计}（字符串，避免浮点误差；老数据没有 fee 按 0）；
+    sign：多 1 / 空 -1；fee：本次成交的手续费（USDT）。
+    返回 (新的 entry 或 None 表示已清空, 平仓结果 {avg, pnl, pct, fee} 或 None)。
+    开仓：数量、成本、手续费累加（加仓取加权均价）。平仓：按均价结算平掉的那部分，
+    净收益 = 价差收益 - 平掉部分对应的开仓手续费 - 本次平仓手续费；平不满则保留剩余和对应手续费。
     没有开仓记录（比如插件装上之前就买了）时给不出收益，返回 None。
     """
     held = Decimal(entry["qty"]) if entry else Decimal(0)
     cost = Decimal(entry["cost"]) if entry else Decimal(0)
+    open_fee = Decimal(entry.get("fee", "0")) if entry else Decimal(0)
     if opening:
-        return {"qty": str(held + qty), "cost": str(cost + qty * price)}, None
+        return {"qty": str(held + qty), "cost": str(cost + qty * price), "fee": str(open_fee + fee)}, None
     if held <= 0:
         return None, None
     avg = cost / held
     closed = min(qty, held)
-    pnl = (price - avg) * closed * sign
-    pct = (price / avg - 1) * 100 * sign if avg else None
+    share = open_fee * closed / held
+    total_fee = share + fee
+    pnl = (price - avg) * closed * sign - total_fee
+    basis = avg * closed
+    pct = pnl / basis * 100 if basis else None
     left = held - closed
-    new = {"qty": str(left), "cost": str(avg * left)} if left > Decimal("1e-12") else None
-    return new, {"avg": avg, "pnl": pnl, "pct": pct}
+    new = ({"qty": str(left), "cost": str(avg * left), "fee": str(open_fee - share)}
+           if left > Decimal("1e-12") else None)
+    return new, {"avg": avg, "pnl": pnl, "pct": pct, "fee": total_fee}
 
 
 def _clip(v: Any, limit: int = 120) -> str | None:
@@ -306,20 +314,26 @@ class QQNotify(BasePlugin):
         qty = _dec(d.get("filled_amount")) or _dec(d.get("amount"))
         price = _dec(d.get("filled_price")) or _dec(d.get("price"))
         total = qty * price if qty is not None and price is not None else None
+        fee = _dec(d.get("fee")) or Decimal(0)
+        fee_cur = str(d.get("fee_currency") or "USDT").upper()
+        usdt_fee = fee if fee_cur == "USDT" else Decimal(0)     # 其它币种折算不了，只显示、不计入收益
         rows = [("策略", await self._name(d)), ("交易对", d.get("symbol")), ("操作", action),
                 ("数量", _fmt(qty)), ("成交价", _fmt(price)),
-                ("成交额", f"{_fmt(total)} USDT" if total is not None else None)]
-        result = await self._track(d, side, pos, qty, price)
+                ("成交额", f"{_fmt(total)} USDT" if total is not None else None),
+                ("手续费", f"{_fmt(fee)} {fee_cur}" if fee > 0 else None)]
+        result = await self._track(d, side, pos, qty, price, usdt_fee)
         if result is not None:
             pnl, pct = result["pnl"], result["pct"]
             rows.append(("买入均价", _fmt(result["avg"])))
             rows.append(("本次收益", f"{pnl:+,.4f} USDT" + (f"（{pct:+.2f}%）" if pct is not None else "")))
-            rows.append(("说明", "收益按买入均价到卖出价计算，未扣手续费"))
+            rows.append(("说明", "收益已扣开仓和平仓手续费" if result["fee"] > 0
+                         else "没有查到手续费，收益按买入均价到卖出价计算"))
         if d.get("is_guard") and d.get("reason"):
             rows.append(("说明", _clip(d.get("reason"))))
         await self._send("info", "成交通知", rows)
 
-    async def _track(self, d: dict[str, Any], side: str, pos: Any, qty: Decimal | None, price: Decimal | None):
+    async def _track(self, d: dict[str, Any], side: str, pos: Any, qty: Decimal | None, price: Decimal | None,
+                     fee: Decimal = Decimal(0)):
         """记录/结算同一个实例、同一个交易对的持仓成本，平仓时返回收益；其余情况返回 None。"""
         iid, symbol = d.get("instance_id"), d.get("symbol")
         if iid is None or not symbol or qty is None or price is None or qty <= 0 or price <= 0:
@@ -339,7 +353,7 @@ class QQNotify(BasePlugin):
                     return None
                 self._seen[oid] = now
             book = await self.ctx.state.get("qq.pos") or {}
-            new, result = apply_fill(book.get(key), opening, sign, qty, price)
+            new, result = apply_fill(book.get(key), opening, sign, qty, price, fee)
             if new is None:
                 book.pop(key, None)
             else:
