@@ -759,7 +759,11 @@ class Engine:
                 else:
                     result = book.place_limit(cid, symbol, side, amount, float(price or ref_price),
                                               reduce_only=bool(reduce_only) and inst.market_type == "futures",
-                                              position_side=position_side)
+                                              position_side=position_side) if inst.market_type == "futures" else \
+                        book.place_limit(cid, symbol, side, amount, float(price or ref_price))
+                    if guard_type == "stop_loss":
+                        # 止损单：价格跌到触发价才成交，不能按普通限价卖单（涨到价位就成交）处理
+                        book.open_orders[cid]["stop"] = True
                 async with session_scope() as db:
                     await self._save_book(db, instance_id, book)
                     await db.commit()

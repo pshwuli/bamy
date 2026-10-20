@@ -108,13 +108,15 @@ class PaperBook:
                              raw={"paper": True}, client_order_id=client_order_id)
 
     def place_limit(self, client_order_id: str, symbol: str, side: str, amount: float, price: float,
-                    *, reduce_only: bool = False) -> ExchangeOrder:
+                    *, reduce_only: bool = False, stop: bool = False) -> ExchangeOrder:
+        # stop=True：止损单，价格跌到触发价才成交（普通限价卖单是涨到价位才成交，两者方向相反）
         # 下单时预检资金/持仓，避免挂出无法成交的单
         if side == "buy" and self.balance < _D(amount) * _D(price) * (1 + _D(self.config.fee_rate)):
             raise ExchangeError("模拟账户资金不足", 42261, rejected=True)
         if side == "sell" and self.positions.get(self.base(symbol), Decimal(0)) < _D(amount):
             raise ExchangeError("持仓不足", 42244, rejected=True)
-        self.open_orders[client_order_id] = {"symbol": symbol, "side": side, "amount": amount, "price": price}
+        self.open_orders[client_order_id] = {"symbol": symbol, "side": side, "amount": amount, "price": price,
+                                             "stop": stop}
         return ExchangeOrder(exchange_order_id=f"paper-{client_order_id}", status="submitted",
                              filled_amount=0.0, filled_price=None, raw={"paper": True},
                              client_order_id=client_order_id)
@@ -125,11 +127,17 @@ class PaperBook:
         for cid, o in list(self.open_orders.items()):
             if o["symbol"] != symbol:
                 continue
-            hit = (o["side"] == "buy" and last <= o["price"]) or (o["side"] == "sell" and last >= o["price"])
+            stop = bool(o.get("stop"))
+            if stop:
+                hit = (o["side"] == "sell" and last <= o["price"]) or (o["side"] == "buy" and last >= o["price"])
+            else:
+                hit = (o["side"] == "buy" and last <= o["price"]) or (o["side"] == "sell" and last >= o["price"])
             if not hit:
                 continue
             try:
-                result = self.fill(cid, symbol, o["side"], o["amount"], o["price"], apply_slippage=False)
+                # 止损按市价成交（取当前价，跳空时比触发价更差），普通限价按限价成交
+                result = self.fill(cid, symbol, o["side"], o["amount"], last if stop else o["price"],
+                                   apply_slippage=False)
             except ExchangeError as exc:
                 result = ExchangeOrder(f"paper-{cid}", "rejected", 0.0, None, raw={"error": str(exc)},
                                        client_order_id=cid)
@@ -330,12 +338,14 @@ class FuturesBook:
                              raw={"paper": True, "futures": True}, client_order_id=client_order_id)
 
     def place_limit(self, client_order_id: str, symbol: str, side: str, amount: float, price: float,
-                    *, reduce_only: bool = False, position_side: str | None = None) -> ExchangeOrder:
+                    *, reduce_only: bool = False, position_side: str | None = None,
+                    stop: bool = False) -> ExchangeOrder:
         code = self.precheck(symbol, side, amount, price, reduce_only=reduce_only, position_side=position_side)
         if code:
             raise ExchangeError("模拟合约账户可用保证金不足" if code == 42261 else "没有可平的持仓", code, rejected=True)
         self.open_orders[client_order_id] = {"symbol": symbol, "side": side, "amount": amount, "price": price,
-                                             "reduce_only": reduce_only, "position_side": position_side}
+                                             "reduce_only": reduce_only, "position_side": position_side,
+                                             "stop": stop}
         return ExchangeOrder(exchange_order_id=f"paper-{client_order_id}", status="submitted",
                              filled_amount=0.0, filled_price=None, raw={"paper": True, "futures": True},
                              client_order_id=client_order_id)
@@ -345,10 +355,16 @@ class FuturesBook:
         for cid, o in list(self.open_orders.items()):
             if o["symbol"] != symbol:
                 continue
-            if not ((o["side"] == "buy" and last <= o["price"]) or (o["side"] == "sell" and last >= o["price"])):
+            stop = bool(o.get("stop"))
+            if stop:
+                hit = (o["side"] == "sell" and last <= o["price"]) or (o["side"] == "buy" and last >= o["price"])
+            else:
+                hit = (o["side"] == "buy" and last <= o["price"]) or (o["side"] == "sell" and last >= o["price"])
+            if not hit:
                 continue
             try:
-                result = self.fill(cid, symbol, o["side"], o["amount"], o["price"], apply_slippage=False, maker=True,
+                result = self.fill(cid, symbol, o["side"], o["amount"], last if stop else o["price"],
+                                   apply_slippage=False, maker=not stop,
                                    reduce_only=bool(o.get("reduce_only")), position_side=o.get("position_side"))
             except ExchangeError as exc:
                 result = ExchangeOrder(f"paper-{cid}", "rejected", 0.0, None, raw={"error": str(exc)}, client_order_id=cid)
