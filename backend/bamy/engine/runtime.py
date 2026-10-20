@@ -1779,10 +1779,11 @@ class Engine:
                 breach = await risk_engine.check_drawdown(db, inst, float(equity), float(peak), run.day_start_equity)
             else:
                 # 实盘：按本实例成交推算权益（口径见 services/live_equity.py），没设本金就只记盈亏不做回撤风控
-                from bamy.services.live_equity import live_pnl
+                from bamy.services.live_equity import backfill_capital, live_pnl
 
                 inst = await db.get(Instance, run.instance_id)
-                lp = await live_pnl(db, inst)
+                # 没本金就写不出快照、曲线永远是空的：先按账号余额补记一次基准
+                lp = await backfill_capital(db, inst, await live_pnl(db, inst))
                 breach = None
                 if lp["equity"] is not None:
                     equity = Decimal(str(lp["equity"]))
