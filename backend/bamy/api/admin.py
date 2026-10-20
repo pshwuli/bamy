@@ -473,7 +473,7 @@ async def view(token: str, request: Request, db=Depends(get_session)):
                     initial = lp["initial"]
                     data |= {"equity": lp["equity"],
                              "return_rate": round(lp["pnl"] / initial, 6) if initial else None,
-                             "equity_curve": []}
+                             "equity_curve": [{"t": iso(datetime.utcnow()), "v": lp["equity"]}]}
                 else:
                     data |= {"pnl": lp["pnl"]}
             if snaps:
