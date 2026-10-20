@@ -22,12 +22,12 @@ class RestrictedHttp:
         self._hosts = {h.lower().strip(".") for h in (hosts or []) if h}
         self._timeout = min(timeout_ms, 30000) / 1000
 
-    def _check(self, url: str) -> str:
+    def _check(self, url: str, schemes: tuple[str, ...] = ("http", "https")) -> str:
         from urllib.parse import urlsplit
 
         parts = urlsplit(url)
-        if parts.scheme not in {"http", "https"}:
-            raise PermissionError("只允许 http/https")
+        if parts.scheme not in schemes:
+            raise PermissionError(f"只允许 {'/'.join(schemes)}")
         if parts.username or parts.password or "@" in parts.netloc:
             raise PermissionError("URL 不得包含用户信息")
         host = (parts.hostname or "").lower().strip(".")
@@ -70,6 +70,33 @@ class RestrictedHttp:
         return await self.request("POST", url, **kw)
 
 
+class RestrictedWs:
+    """受限 WebSocket 客户端：只能用 wss 连 network.hosts 白名单内的主机。
+
+    主机白名单、userinfo、解析后内网/回环/保留地址的检查与 RestrictedHttp 共用；不走环境代理，
+    插件不能改 TLS 校验。心跳由插件按各自协议自己发，所以关掉库自带的 ping。
+    """
+
+    def __init__(self, hosts: list[str], timeout_ms: int = 5000) -> None:
+        self._guard = RestrictedHttp(hosts, timeout_ms)
+
+    def connect(self, url: str):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _open():
+            import httpx
+            from websockets.asyncio.client import connect
+
+            host = self._guard._check(url, ("wss",))
+            await self._guard._check_resolved(host, httpx.URL(url.replace("wss://", "https://", 1)).port or 443)
+            async with connect(url, proxy=None, open_timeout=self._guard._timeout, ping_interval=None,
+                               max_size=1 << 20) as ws:
+                yield ws
+
+        return _open()
+
+
 class PluginContext:
     """插件上下文：框架给插件的唯一能力入口（《插件规范》8.4）。"""
 
@@ -81,15 +108,16 @@ class PluginContext:
     data_scope: str
     state: StateStore
     http: RestrictedHttp | None
+    ws: RestrictedWs | None
 
     # 框架只注入三个窄能力（写日志、发通知、只读概览），以闭包形式持有；插件拿不到引擎对象，也就拿不到任何下单接口
-    __slots__ = ("plugin_id", "binding_id", "scope", "scope_id", "settings", "data_scope", "state", "http",
+    __slots__ = ("plugin_id", "binding_id", "scope", "scope_id", "settings", "data_scope", "state", "http", "ws",
                  "_log_fn", "_notify_fn", "_overview_fn")
 
     def __init__(self, *, log_fn: Callable[[str, str], None] | None = None,
                  notify_fn: Callable[[str, str, str], Awaitable[None]] | None = None,
                  overview_fn: Callable[[int | None], Awaitable[dict[str, Any]]] | None = None, **kw: Any) -> None:
-        for name in ("plugin_id", "binding_id", "scope", "scope_id", "settings", "data_scope", "state", "http"):
+        for name in ("plugin_id", "binding_id", "scope", "scope_id", "settings", "data_scope", "state", "http", "ws"):
             object.__setattr__(self, name, kw.get(name))
         if self.settings is None:
             object.__setattr__(self, "settings", {})
@@ -138,4 +166,4 @@ class PluginContext:
         return json.dumps(value, ensure_ascii=False, default=str)
 
 
-__all__ = ["ALLOW", "DENY", "MODIFY", "BasePlugin", "PluginContext", "RestrictedHttp", "StateStore"]
+__all__ = ["ALLOW", "DENY", "MODIFY", "BasePlugin", "PluginContext", "RestrictedHttp", "RestrictedWs", "StateStore"]

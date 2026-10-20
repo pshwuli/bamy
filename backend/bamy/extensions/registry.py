@@ -1,6 +1,7 @@
 """策略中心与插件中心：扫描、校验、热更新（《策略规范》第三节、《插件规范》第九至十节）。"""
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import re
@@ -74,6 +75,11 @@ class Extension:
     def actions(self) -> list[dict[str, Any]]:
         """插件声明的手动动作（如扫码绑定）：{id, label, handler}，由用户在设置页触发。"""
         return [a for a in (self.meta.get("actions") or []) if isinstance(a, dict)]
+
+    @property
+    def services(self) -> list[dict[str, Any]]:
+        """插件声明的后台服务（如常驻连接）：{id, handler}，绑定生效时由插件中心启动、失效时取消。"""
+        return [a for a in (self.meta.get("services") or []) if isinstance(a, dict)]
 
     @property
     def network(self) -> dict[str, Any] | None:
@@ -217,6 +223,14 @@ class ExtensionRegistry:
                 if not action.get("handler") or not action.get("label"):
                     raise ValueError(f"动作 {aid} 缺少 handler 或 label")
                 action_ids.add(aid)
+            service_ids: set[str] = set()
+            if len(ext.services) > 4:
+                raise ValueError("后台服务最多 4 个")
+            for svc in ext.services:
+                sid = str(svc.get("id") or "")
+                if not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", sid) or sid in service_ids or not svc.get("handler"):
+                    raise ValueError(f"后台服务 id 非法、重复或缺少 handler：{sid or '空'}")
+                service_ids.add(sid)
 
     def _import_class(self, ext: Extension) -> type:
         module_name = f"bamy_ext_{ext.kind}_{ext.id}"
@@ -298,6 +312,10 @@ class ExtensionRegistry:
             for action in ext.actions:
                 if not callable(getattr(ext.cls, str(action["handler"]), None)):
                     raise ValueError(f"未实现动作处理函数 {action['handler']}")
+            for svc in ext.services:
+                fn = getattr(ext.cls, str(svc["handler"]), None)
+                if not callable(fn) or not asyncio.iscoroutinefunction(fn):
+                    raise ValueError(f"后台服务 {svc['handler']} 未实现或不是 async")
 
     # ---- 查询 ----
     def get_strategy(self, sid: str) -> Extension | None:

@@ -151,10 +151,9 @@ sudo bash scripts/install-updater.sh         # 可选：装上后台"系统更�
 
 **注意**：如果通过 `git pull` 手工更新代码，更新完成后必须重启服务才能生效（`BAMY_MODE=docker scripts/start.sh` 或 `BAMY_MODE=native scripts/start.sh`）。推荐使用上述自动更新流程，它会自动处理重启。
 
-开发与测试：
+开发与检查：
 
 ```
-.venv/bin/python -m pytest              # 后端测试（tests/backend）
 cd frontend && npm run typecheck        # 前端类型检查
 ```
 

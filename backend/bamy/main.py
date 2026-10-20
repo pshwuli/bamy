@@ -104,11 +104,13 @@ async def startup() -> None:
 
 
 async def shutdown() -> None:
+    from bamy.engine.pluginhub import plugin_hub
     from bamy.engine.runtime import engine
     from bamy.engine.scheduler import scheduler
     from bamy.engine.userstream import user_stream
 
     engine.ready = False
+    await plugin_hub.stop_all()
     await scheduler.stop()
     await user_stream.close()
     await engine.shutdown()

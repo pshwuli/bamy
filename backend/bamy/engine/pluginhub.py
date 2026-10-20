@@ -51,6 +51,7 @@ class LiveBinding:
     obj: Any
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_tick: dict[str, float] = field(default_factory=dict)
+    tasks: list[asyncio.Task] = field(default_factory=list)   # 插件声明的后台服务
 
 
 class PluginHub:
@@ -83,11 +84,49 @@ class PluginHub:
         live = LiveBinding(binding=binding, obj=obj)
         self._live[binding.id] = live
         await self._call_lifecycle(live, "on_bind")
+        self._start_services(live)
 
     async def deactivate(self, binding_id: int, call_unbind: bool = True) -> None:
         live = self._live.pop(binding_id, None)
-        if live is not None and call_unbind:
-            await self._call_lifecycle(live, "on_unbind")
+        if live is not None:
+            await self._stop_services(live)
+            if call_unbind:
+                await self._call_lifecycle(live, "on_unbind")
+
+    def _start_services(self, live: LiveBinding) -> None:
+        ext = registry.get_plugin(live.binding.plugin_id)
+        for svc in (ext.services if ext else []):
+            handler = getattr(live.obj, str(svc["handler"]))
+            live.tasks.append(asyncio.create_task(self._supervise(live, handler),
+                                                  name=f"plugin-{live.binding.id}-{svc['id']}"))
+
+    async def _stop_services(self, live: LiveBinding) -> None:
+        tasks, live.tasks = live.tasks, []
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def stop_all(self) -> None:
+        """关机：取消全部绑定的后台服务。"""
+        for live in list(self._live.values()):
+            await self._stop_services(live)
+
+    async def _supervise(self, live: LiveBinding, handler) -> None:
+        """后台服务崩溃后退避重启；正常返回表示服务主动结束（如凭据没填），不再重启。"""
+        delay = 5.0
+        while True:
+            started = time.monotonic()
+            try:
+                await handler()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.warning("插件 %s#%s 后台服务异常：%s", live.binding.plugin_id, live.binding.id, type(exc).__name__)
+            if time.monotonic() - started > 60:
+                delay = 5.0
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 300.0)
 
     async def settings_changed(self, binding: PluginBinding) -> None:
         live = self._live.get(binding.id)
@@ -95,9 +134,11 @@ class PluginHub:
             await self.activate(binding)
             return
         ext = registry.get_plugin(binding.plugin_id)
+        await self._stop_services(live)
         live.binding = binding
         live.obj.ctx = self._make_ctx(binding, ext)
         await self._call_lifecycle(live, "on_settings")
+        self._start_services(live)
 
     async def reload_all(self) -> None:
         for bid in list(self._live):
@@ -113,11 +154,12 @@ class PluginHub:
 
     def _make_ctx(self, binding: PluginBinding, ext) -> Any:
         from bamy.engine.runtime import engine
-        from bamy.plugin import PluginContext, RestrictedHttp
+        from bamy.plugin import PluginContext, RestrictedHttp, RestrictedWs
 
         settings = _decode_settings(binding.settings, ext.settings_schema if ext else [])
         net = ext.network if ext else None
         http = RestrictedHttp(net.get("hosts") or [], int(net.get("timeout_ms", 5000))) if net else None
+        ws = RestrictedWs(net.get("hosts") or [], int(net.get("timeout_ms", 5000))) if net else None
 
         async def load(key: str) -> str | None:
             from bamy.db.models import PluginState
@@ -136,7 +178,7 @@ class PluginHub:
         return PluginContext(
             plugin_id=binding.plugin_id, binding_id=binding.id, scope=binding.scope,
             scope_id=binding.scope_id, settings=settings, data_scope=ext.data_scope if ext else "own",
-            state=StateStore(load, save, delete), http=http,
+            state=StateStore(load, save, delete), http=http, ws=ws,
             log_fn=lambda level, msg: engine.log(None, level, msg, module="plugin"),
             notify_fn=lambda title, body, level, _pid=binding.plugin_id, _bid=binding.id: engine.notify(
                 title, body, level, plugin_id=_pid, binding_id=_bid),
@@ -420,7 +462,7 @@ class PluginHub:
                     auto_disabled = False
             await db.commit()
         if auto_disabled:
-            self._live.pop(b.id, None)
+            await self.deactivate(b.id, call_unbind=False)
             from bamy.engine.runtime import engine
 
             # 经 engine.push：同时进事件总线、WebSocket（推给绑定所属用户）和通知中心
