@@ -25,7 +25,7 @@ if [[ "${MODE}" == docker ]]; then
     set -e
     cd /app
     if [ -f backend/alembic.ini ]; then
-      cd backend && alembic upgrade head
+      alembic -c backend/alembic.ini upgrade head
     else
       python -c "$0"
     fi' "${INIT_PY}"
@@ -40,7 +40,8 @@ mkdir -p data
 export PYTHONPATH="${ROOT_DIR}/backend${PYTHONPATH:+:${PYTHONPATH}}"
 export ENV_FILE
 if [[ -f "${ROOT_DIR}/backend/alembic.ini" ]]; then
-  ( cd backend && "${PY}" -m alembic upgrade head )
+  # 必须在仓库根目录跑：DATABASE_URL 默认是相对路径 ./data/bamy.db，换到 backend/ 下会把库建错地方
+  "${PY}" -m alembic -c backend/alembic.ini upgrade head
 else
   "${PY}" -c "${INIT_PY}"
 fi

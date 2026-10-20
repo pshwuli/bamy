@@ -164,7 +164,8 @@ class MarketScannerStrategy(BaseStrategy):
         _, sym, w, chg, dist = max(hits)
         self.ctx.log_info(f"{head} | 命中 {len(hits)} 个，取成交额最大的 {sym}：{p['window']}{chg:+.1f}% 距高{dist:+.1f}%，进入确认")
         if await self._confirm(sym, float(w["last"]), float(w["high"])):
-            self.pending = {"symbol": sym, "price": float(self.ctx.get_ticker(sym)["price"])}
+            t = self.ctx.get_ticker(sym)
+            self.pending = {"symbol": sym, "price": float((t or {}).get("price") or w["last"])}
 
     async def _confirm(self, sym: str, start: float, high: float) -> bool:
         """等 confirm_seconds 秒再看一次，4 道关卡全过才买；专门躲瞬间插针。"""
