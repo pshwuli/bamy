@@ -117,8 +117,11 @@ async function loadPaper() {
 
 // 实盘本金：用来算收益率和回撤（不影响下单）；运行中也能改
 const liveCapital = computed<number | null>(() => {
-  const v = Number((inst.value?.paper_config as Row | null)?.live_capital)
-  return Number.isFinite(v) && v > 0 ? v : null
+  // 手填本金优先；没填就用后端按币安账号余额算出的基准（initial_equity），不用非要手填
+  const manual = Number((inst.value?.paper_config as Row | null)?.live_capital)
+  if (Number.isFinite(manual) && manual > 0) return manual
+  const auto = Number((inst.value as Row | null)?.initial_equity)
+  return Number.isFinite(auto) && auto > 0 ? auto : null
 })
 const livePnl = computed<number | null>(() => (inst.value && !inst.value.paper && inst.value.pnl != null ? Number(inst.value.pnl) : null))
 const capOpen = ref(false)
