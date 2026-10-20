@@ -76,8 +76,8 @@ services:
       # 方案 B（后端托管前端静态）时取消注释：
       # - ../frontend/dist:/app/frontend/dist:ro
     ports:
-      # 只绑本机回环，供 /setup 首次初始化与本机运维；对外流量走 nginx
-      - "127.0.0.1:${APP_PORT:-8000}:8000"
+      # 监听所有网卡（0.0.0.0），内网穿透可以直接转发到这个端口；只想本机访问就把 APP_BIND 设成 127.0.0.1
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy

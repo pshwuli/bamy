@@ -83,7 +83,7 @@ for _ in $(seq 1 60); do
     die "进程已退出，见上方日志"
   fi
   if "${SCRIPT_DIR}/healthcheck.sh" --quiet; then
-    log "BAMY 已就绪：http://127.0.0.1:$(app_port)/  首次使用访问 /setup 创建管理员"
+    log "BAMY 已就绪：监听 ${APP_HOST:-0.0.0.0}:$(app_port)，本机访问 http://127.0.0.1:$(app_port)/  首次使用访问 /setup 创建管理员"
     exit 0
   fi
   sleep 2
