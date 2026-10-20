@@ -18,7 +18,7 @@ import LogList from '@/components/LogList.vue'
 
 // 后端曲线点实际为 { t, v }；api/view.ts 声明为 { t|timestamp, equity }，两者都兼容
 type CurvePoint = { t?: string; timestamp?: string; v?: number; equity?: number }
-type Data = Omit<ViewData, 'equity_curve'> & { equity_curve?: CurvePoint[]; readonly?: boolean }
+type Data = Omit<ViewData, 'equity_curve'> & { equity_curve?: CurvePoint[]; readonly?: boolean; pnl?: number | null }
 type Pos = Position & { unrealized_pnl_pct?: number }
 
 const { t, te } = useI18n()
@@ -170,6 +170,9 @@ onBeforeUnmount(() => {
             <el-empty v-else :description="t('common.empty')" :image-size="60" />
           </section>
         </template>
+        <div v-else-if="data.pnl != null" class="grid-cards">
+          <StatCard :label="te('livex.pnl') ? t('livex.pnl') : 'P&L'" :value="fmtMoney(data.pnl)" :tone="data.pnl >= 0 ? 'up' : 'down'" />
+        </div>
         <el-alert v-else type="info" :closable="false" :title="t('misc.shareNoEquity')" class="sv-gap" />
 
         <section v-if="positions" class="card">
