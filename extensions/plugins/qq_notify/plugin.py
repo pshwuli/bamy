@@ -96,7 +96,7 @@ def _scrub(v: Any) -> str:
 
 def _render(title: str, rows: list[tuple[str, Any]]) -> tuple[str, str]:
     """返回 (Markdown, 纯文本)。整条消息是一个引用块：加粗标题，隔一个空引用行，之后每项一行「名称：内容」；纯文本版去掉引用符号。"""
-    lines = [f"{k}：{_scrub(v)}" for k, v in rows if _scrub(v)]
+    lines = [f"{k}：{_scrub(v)}" for k, v in rows if v is not None and _scrub(v) not in ("", "None")]
     plain = "\n".join(lines)
     quoted = "\n".join([f"> **{title}**", ">", *(f"> {line}" for line in lines)])
     return quoted, f"{title}\n\n{plain}"

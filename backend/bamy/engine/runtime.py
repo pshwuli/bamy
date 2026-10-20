@@ -394,6 +394,15 @@ class Engine:
         # 实盘：启动前对账
         if account is not None:
             await self.reconcile_account(account.id, reason="start")
+            # 没填本金的实盘实例：首次启动按账号当前 USDT 余额记一次基准（失败不影响启动）
+            try:
+                from bamy.services.live_equity import snapshot_auto_capital
+
+                client = await pool.get(account)
+                async with session_scope() as db:
+                    await snapshot_auto_capital(db, await db.get(Instance, instance_id), client)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("记录实例 %s 的基准本金失败：%s", instance_id, exc)
         # 检查点：instance.before_start
         res = await plugin_hub.intercept("instance.before_start",
                                          {"instance": snapshot, "account": acct_view,
@@ -759,6 +768,28 @@ class Engine:
             else:
                 result = await self._send_live(inst, side, amount, price, type_, cid, stop_price, symbol=symbol,
                                                reduce_only=bool(reduce_only), position_side=position_side)
+                # ★ 币安市价单的创建响应没有成交均价（price="0.0000000"、average=None）。
+                #   这里补查一次订单详情，把 filled_price 填上，否则成交通知里
+                #   成交价/成交额永远显示 None，盈亏也算不出来。
+                if result is not None and result.status == "filled" and not result.filled_price:
+                    try:
+                        async with session_scope() as db:
+                            _acc = await db.get(Account, inst.account_id)
+                        _cli = await pool.get(_acc)
+                        detail = await asyncio.wait_for(
+                            _cli.fetch_order_by_client_id(cid, symbol), timeout=10)
+                        if detail is not None and detail.filled_price:
+                            result = ExchangeOrder(
+                                exchange_order_id=result.exchange_order_id or detail.exchange_order_id,
+                                status=result.status,
+                                filled_amount=result.filled_amount or detail.filled_amount,
+                                filled_price=detail.filled_price,
+                                fee=result.fee, raw=result.raw,
+                                client_order_id=result.client_order_id,
+                                fee_currency=result.fee_currency,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("补查订单成交价失败 %s：%s", cid, exc)
         except ExchangeError as exc:
             error = exc
 
@@ -951,6 +982,13 @@ class Engine:
                     o.status = "filled"
             if result.raw is not None:
                 o.raw_response = json.dumps(result.raw, default=str)[:20000]
+            # ★ 终态为 failed/rejected 且 reason 为空时，把交易所给的原因落库。
+            #   以前只有 raw_response 里的 "reconcile": "not_found"，reason 是 NULL，
+            #   上层日志打出来就是 "failed：None"，看不出到底发生了什么。
+            if incoming in {"failed", "rejected"} and not o.reason and isinstance(result.raw, dict):
+                why = result.raw.get("reason") or result.raw.get("msg") or result.raw.get("message")
+                if why:
+                    o.reason = str(why)[:2000]
             await db.commit()
             await db.refresh(o)
             if result.status == "filled":
@@ -1503,8 +1541,14 @@ class Engine:
             try:
                 result = await client.fetch_order_by_client_id(o.client_order_id, o.symbol)
             except Exception as exc:  # noqa: BLE001
-                if "not found" in str(exc).lower() or "does not exist" in str(exc).lower() or "-2013" in str(exc):
-                    result = ExchangeOrder(None, "failed", 0.0, None, raw={"reconcile": "not_found"})
+                msg = str(exc)
+                if "not found" in msg.lower() or "does not exist" in msg.lower() or "-2013" in msg:
+                    # ★ 交易所查不到这笔单：可能是被拒、被瞬秒触发后成交并清出、或根本没挂上。
+                    #   以前这里 raw 只写 {"reconcile": "not_found"}，导致上层日志打印
+                    #   "订单 xxx failed：None"，完全看不出原因，只能人工猜。
+                    result = ExchangeOrder(None, "failed", 0.0, None,
+                                           raw={"reconcile": "not_found",
+                                                "reason": f"交易所查无此单（{msg[:120]}）"})
                 else:
                     raise
         except Exception as exc:  # noqa: BLE001

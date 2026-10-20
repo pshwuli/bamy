@@ -37,7 +37,7 @@ const form = reactive({
   symbol: '',
   paper: true,
   account_id: null as number | null,
-  paper_balance: 10000 as number | null,
+  paper_balance: null as number | null,
   fee_rate: 0.001,
   slippage: 0.0005,
   stop_action: 'keep',
@@ -65,7 +65,6 @@ const rules = computed<FormRules>(() => ({
   name: [req(), { min: 1, max: 64, trigger: ['blur', 'change'], message: t('schema.maxLength', { n: 64 }) }],
   symbol: isScan.value ? [] : [req()],
   account_id: form.paper ? [] : [req()],
-  paper_balance: form.paper ? [req()] : [],
 }))
 
 async function init() {
@@ -245,7 +244,7 @@ onMounted(init)
           </template>
           <template v-else>
             <el-form-item :label="t('instance.paperBalance')" prop="paper_balance" :error="errOf('paper_balance')">
-              <el-input-number v-model="form.paper_balance" :min="1" :step="1000" controls-position="right" />
+              <el-input-number v-model="form.paper_balance" :min="1" :step="1000" controls-position="right" :placeholder="t('livex.optionalDefault')" />
               <span class="suffix">USDT</span>
             </el-form-item>
             <el-form-item :label="t('instance.paperFee')" :error="errOf('paper_config.fee_rate')">

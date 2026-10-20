@@ -149,6 +149,7 @@ async def get_instance(instance_id: int, ctx: Ctx = Depends(current)):
 
 # 模拟盘初始资金上限：Numeric(20, 8) 能存 10^12 量级；这里限 1 亿 USDT，足够覆盖大资金模拟
 PAPER_BALANCE_MAX = 100_000_000
+PAPER_BALANCE_DEFAULT = 10_000     # 模拟盘不填初始资金时的默认值（USDT）
 
 
 class PaperConfigIn(BaseModel):
@@ -236,7 +237,9 @@ async def create_instance(body: InstanceIn, ctx: Ctx = Depends(current)):
             raise ApiError(42247, f"杠杆 {lev} 倍超过风控上限 {cap} 倍")
     account = None
     if body.paper:
-        if not body.paper_balance or body.paper_balance <= 0:
+        if body.paper_balance is None:
+            body.paper_balance = PAPER_BALANCE_DEFAULT          # 不填就用默认值，不再强制手填
+        if body.paper_balance <= 0:
             raise ApiError(40003, "模拟盘初始资金必须大于 0")
         account_id = None
     else:

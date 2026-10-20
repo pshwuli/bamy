@@ -5,7 +5,8 @@
 
 口径（与模拟盘一致）：
 - 本金 initial：实例上设置的 live_capital（建实例或改参数时填，存在 paper_config.live_capital）；
-  没填时为空，页面只显示盈亏金额、不显示收益率。
+  没填时用首次启动时记下的账号 USDT 余额（paper_config.auto_capital，只记一次，之后固定）；
+  两者都没有（比如启动时取不到余额）则为空，页面只显示盈亏金额、不显示收益率。
 - 已实现盈亏：本实例已成交订单按交易对配对平仓算出，扣手续费（手续费按 USDT 计；以 BNB 等抵扣时按 0 处理并标注）。
 - 未实现盈亏：剩余净持仓 × (现价 - 均价)。
 - 权益 equity = 本金 + 已实现 + 未实现（没填本金时 equity 为空，只给 pnl）。
@@ -22,16 +23,55 @@ from bamy.db.models import Instance, Order
 from bamy.engine.market import market
 
 
-def live_capital(inst: Instance) -> float | None:
+def _cfg(inst: Instance) -> dict[str, Any]:
     try:
-        v = json.loads(inst.paper_config or "{}").get("live_capital")
+        cfg = json.loads(inst.paper_config or "{}")
     except (TypeError, ValueError):
-        return None
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _positive(v: Any) -> float | None:
     try:
         v = float(v)
     except (TypeError, ValueError):
         return None
     return v if v > 0 else None
+
+
+def live_capital(inst: Instance) -> float | None:
+    """用户手动填的本金；没填返回 None。"""
+    return _positive(_cfg(inst).get("live_capital"))
+
+
+def auto_capital(inst: Instance) -> float | None:
+    """实例首次启动时记下的账号 USDT 余额，用户没填本金时当基准。"""
+    return _positive(_cfg(inst).get("auto_capital"))
+
+
+def capital_of(inst: Instance) -> float | None:
+    """生效的本金：手填优先，否则用启动时记下的基准，都没有返回 None。"""
+    return live_capital(inst) or auto_capital(inst)
+
+
+async def snapshot_auto_capital(db: AsyncSession, inst: Instance, client: Any) -> float | None:
+    """实盘实例没填本金、也还没记过基准时，按当前账号 USDT 余额记一次，之后不再改。
+
+    只记一次是为了让基准固定：余额里已经含了已实现盈亏，如果每次刷新都重新取，
+    权益 = 余额 + 盈亏 会把盈亏算两遍。取不到余额就不记，页面退回只显示盈亏金额。
+    """
+    if inst.paper or capital_of(inst) is not None:
+        return capital_of(inst)
+    try:
+        usdt = next((b.total for b in await client.fetch_balance() if b.asset == "USDT"), None)
+    except Exception:  # noqa: BLE001
+        return None
+    base = _positive(usdt)
+    if base is None:
+        return None
+    inst.paper_config = json.dumps(_cfg(inst) | {"auto_capital": base})
+    await db.commit()
+    return base
 
 
 async def live_pnl(db: AsyncSession, inst: Instance) -> dict[str, Any]:
@@ -85,6 +125,6 @@ async def live_pnl(db: AsyncSession, inst: Instance) -> dict[str, Any]:
                 continue
         unrealized += (float(tick["price"]) - avg) * net
     pnl = realized + unrealized - fees
-    initial = live_capital(inst)
+    initial = capital_of(inst)
     return {"initial": initial, "equity": initial + pnl if initial else None, "realized": realized - fees,
             "unrealized": unrealized, "pnl": pnl, "fees": fees, "fee_other": fee_other}
