@@ -246,11 +246,15 @@ class MarketScannerStrategy(BaseStrategy):
         from bamy.db.models import Order
         from bamy.db.session import session_scope
 
+        from datetime import datetime, timedelta
+
         pos = self.pos[sym]
+        # 只看这笔仓位开出之后的卖出，否则同一个币上一轮的成交会被当成这一轮的出场
+        since = datetime.utcfromtimestamp(pos["opened_at"]) - timedelta(minutes=1)
         async with session_scope() as db:
             o = (await db.execute(select(Order).where(
                 Order.instance_id == self.ctx.instance_id, Order.symbol == sym, Order.side == "sell",
-                Order.status == "filled").order_by(Order.id.desc()).limit(1))).scalars().first()
+                Order.status == "filled", Order.created_at >= since).order_by(Order.id.desc()).limit(1))).scalars().first()
         if o is not None and o.filled_price:
             fill = float(o.filled_price)
             how = "保护单触发" if o.is_guard else "已平仓"
