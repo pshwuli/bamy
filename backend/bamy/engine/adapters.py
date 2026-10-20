@@ -191,11 +191,18 @@ class BinanceSpotAdapter:
         raw = await self.client.cancel_order(exchange_order_id, symbol)
         return _parse_order(raw, raw.get("clientOrderId"))
 
+    conditional_orders = False      # 合约的止损单走条件单接口，普通挂单查不到；期货适配器改成 True
+
     async def fetch_open_orders(self, symbol: str) -> list[ExchangeOrder]:
-        """必须带 symbol：不带时币安按全市场计权重（现货 80、合约 40），对账一跑就容易限频。"""
+        """必须带 symbol：不带时币安按全市场计权重（现货 80、合约 40），对账一跑就容易限频。
+
+        合约会多查一次条件单（止损单），否则保护单检测和对账都会把在途的止损单当成"缺失"。
+        """
         if not symbol:
             raise ValueError("fetch_open_orders 必须指定交易对")
         raw = await self.client.fetch_open_orders(symbol)
+        if self.conditional_orders:
+            raw = [*raw, *await self.client.fetch_open_orders(symbol, None, None, {"trigger": True})]
         return [_parse_order(o, o.get("clientOrderId")) for o in raw]
 
 
@@ -204,6 +211,8 @@ class BinanceFuturesAdapter(BinanceSpotAdapter):
 
     与现货适配器接口一致，另加 set_leverage / set_margin_mode / fetch_positions，下单支持 reduceOnly。
     """
+
+    conditional_orders = True       # 止损单走条件单接口，查挂单要带 trigger 再查一次
 
     def __init__(self, api_key: str, api_secret: str, env: str = "mainnet", readonly: bool = False):
         self.readonly = readonly
