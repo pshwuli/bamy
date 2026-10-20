@@ -25,7 +25,6 @@ MIN_NOTIONAL = 6.0           # 币安合约多数交易对最小下单额 5 USDT
 LOG_EVERY = 120              # 没有新动作时，扫描结果最多每 2 分钟写一行日志
 GUARD_STEP_PCT = 0.2         # 止损单上移的最小步长（相对当前止损价），避免每秒改单
 GUARD_WARN_EVERY = 300       # 止损单挂不上时，告警最多每 5 分钟一条
-SLOTS = 1                    # 最多同时持有 1 个币
 LISTING_MIN_HOURS = 24       # 上市不满 24 小时的不碰（首日尖峰会被误判为暴涨）
 EPS = 1e-9                   # 百分比比较的容差：(95/100-1)*100 浮点结果是 -5.000000000000004，不加容差会把刚好踩线的误拒
 
@@ -81,6 +80,7 @@ class MarketScannerStrategy(BaseStrategy):
         self.last_log = 0.0
         self.last_msg = ""
         self.paused = False
+        self.slots = int(p["slots"])
         self.mode = await self.ctx.position_mode()
         if self.ctx.paper:
             await self.ctx.set_leverage(1)
@@ -88,7 +88,7 @@ class MarketScannerStrategy(BaseStrategy):
         self.ctx.log_info(
             f"全市场扫描启动（U 本位永续，只做多，1 倍）：成交额 ≥{float(p['min_quote_volume']):g} 万U 且 24h ≥{float(p['min_change_24h']):g}%，"
             f"{p['window']} 涨幅 ≥{float(p['min_change_pct']):g}% 距高点 ≥{float(p['max_from_high_pct']):g}%；"
-            f"每次 {float(p['position_pct']):g}% 权益；止损 -{float(p['stop_pct']):g}%，+{float(p['arm_pct']):g}% 后回落 "
+            f"每次 {float(p['position_pct']):g}% 权益，最多同时 {self.slots} 个；止损 -{float(p['stop_pct']):g}%，+{float(p['arm_pct']):g}% 后回落 "
             f"{float(p['trail_pct']):g}% 卖，{float(p['max_hold_hours']):g}h 到期，冷却 {float(p['cooldown_hours']):g}h"
             + (f"；恢复持仓 {'、'.join(self.pos)}" if self.pos else ""))
 
@@ -119,7 +119,8 @@ class MarketScannerStrategy(BaseStrategy):
         if now - self.t_manage >= float(self.p["manage_seconds"]):
             self.t_manage = now
             for sym in list(self.pos):
-                await self._manage(sym)
+                if not self.paused:                      # 暂停期间不执行程序侧的止损、止盈、到期平仓
+                    await self._manage(sym)
         if self.scan_task is not None and self.scan_task.done():
             exc = self.scan_task.exception()
             self.scan_task = None
@@ -127,12 +128,12 @@ class MarketScannerStrategy(BaseStrategy):
                 self.ctx.log_warn(f"扫描失败：{exc!r}")
         if self.pending is not None:
             sig, self.pending = self.pending, None
-            if len(self.pos) < SLOTS and not self.paused:
+            if len(self.pos) < self.slots and not self.paused:
                 await self._open(sig["symbol"], sig["price"])
         if self.scan_task is None and now - self.t_scan >= float(self.p["scan_seconds"]):
             self.t_scan = now
             self.synced = await self._reconcile()
-            if self.paused or not self.synced or len(self.pos) >= SLOTS:
+            if self.paused or not self.synced or len(self.pos) >= self.slots:
                 return
             if now < self.breaker_until:
                 await self._status("熔断中：不买新仓，持仓止损止盈照常")
@@ -484,7 +485,7 @@ class MarketScannerStrategy(BaseStrategy):
 
     async def pause(self) -> None:
         self.paused = True
-        self.ctx.log_info("已暂停：不再买新仓；已有持仓的止损止盈仍照常执行")
+        self.ctx.log_info("已暂停：不扫描、不买新仓、不检查止损止盈和到期（已有持仓保留，交易所上的止损单仍然有效）")
 
     async def resume(self) -> None:
         self.paused = False
