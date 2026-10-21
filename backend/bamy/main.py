@@ -43,6 +43,10 @@ def _setup_logging() -> None:
         logging.getLogger().addHandler(fh)
     except OSError:  # pragma: no cover - 只读文件系统时只打 stdout
         pass
+    from bamy.core.redact import ScrubFilter
+
+    for handler in logging.getLogger().handlers:        # 统一在输出口脱敏，不用逐个调用点去补
+        handler.addFilter(ScrubFilter())
 
 
 async def _init_admin() -> None:

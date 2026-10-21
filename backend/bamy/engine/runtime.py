@@ -20,7 +20,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from bamy.core.config import settings
 from bamy.core.errors import ApiError
-from bamy.core.redact import describe_exc
+from bamy.core.redact import describe_exc, scrub
 from bamy.db.models import (
     Account, Instance, InstanceState, Notification, Order, PaperAccount, PaperSnapshot,
     PluginState, PositionSnapshot, ReconcileDiff, RiskRule, SystemLog, User,
@@ -136,6 +136,7 @@ class Engine:
     def log(self, instance_id: int | None, level: str, message: str, *, module: str = "strategy",
             account_id: int | None = None) -> None:
         level = {"warning": "warn"}.get(level, level)
+        message = scrub(message)
         getattr(log, {"warn": "warning"}.get(level, level), log.info)("[实例 %s] %s", instance_id, message)
         self._log_buffer.append(SystemLog(level=level, module=module, instance_id=instance_id,
                                           account_id=account_id, message=message[:4000]))
@@ -1050,6 +1051,7 @@ class Engine:
                 o.canceled_at = datetime.utcnow()
                 if o.filled_amount and o.filled_amount >= o.amount:
                     o.status = "filled"
+            _drop_stale_cancel_reason(o)
             if result.raw is not None:
                 o.raw_response = json.dumps(result.raw, default=str)[:20000]
             # ★ 终态为 failed/rejected 且 reason 为空时，把交易所给的原因落库。
@@ -1208,13 +1210,25 @@ class Engine:
             await self._mutate_order(o.id, to_unknown)
             raise ApiError(50401, "撤单超时，订单进入对账")
         except Exception as exc:  # noqa: BLE001 - 失败恢复原状态
+            if "-2011" in str(exc) or "Unknown order" in str(exc):
+                # 币安说"没有这张单"：多半是刚触发成交或已被撤，不是撤单失败。不写说明，去对账收敛真实状态
+                def back(row: Order) -> None:
+                    if row.status == "canceling":
+                        row.status = prev
+
+                await self._mutate_order(o.id, back)
+                await self.reconcile_order(o.id)
+                async with session_scope() as db:
+                    row = await db.get(Order, o.id)
+                return _view(row) if row is not None else OrderView(id=o.id, status="canceled", reason="订单记录已清理")
+
             def restore(row: Order) -> None:
                 if row.status == "canceling":
                     row.status = prev
-                    row.reason = f"撤单失败：{exc}"[:2000]
+                    row.reason = f"撤单失败：{describe_exc(exc)}"[:2000]
 
             await self._mutate_order(o.id, restore)
-            raise ApiError(50201, f"撤单失败：{exc}") from exc
+            raise ApiError(50201, f"撤单失败：{describe_exc(exc)}") from exc
         view = await self._apply_result(o.id, result)
         async with session_scope() as db:
             await write_audit(db, action="order.cancel", actor_id=actor_id, target_type="order", target_id=o.id,
@@ -1533,7 +1547,26 @@ class Engine:
             return await self.framework_positions(ctx.instance_id)
         async with session_scope() as db:
             client = await pool.get(await db.get(Account, ctx.account_id))
-        return await client.fetch_positions()
+        positions = await client.fetch_positions()
+        await self._settle_guards(ctx.instance_id, {p.get("symbol") for p in positions})
+        return positions
+
+    async def _settle_guards(self, instance_id: int, held: set[Any]) -> None:
+        """交易所上已经没有仓位的币，把本实例还挂着"在途"的保护单先对账一遍。
+
+        止损单在交易所触发成交后，本地订单状态要等下一轮对账才变成已成交；策略这时问到"没仓位了"，
+        去订单里找卖出成交记录却找不到（只能清掉本地记录、盈亏漏记）。先收敛，再把持仓还给策略。
+        """
+        try:
+            async with session_scope() as db:
+                ids = (await db.execute(select(Order.id, Order.symbol).where(
+                    Order.instance_id == instance_id, Order.is_guard.is_(True),
+                    Order.status.in_(("submitted", "partial"))))).all()
+            for oid, sym in ids:
+                if sym not in held:
+                    await self.reconcile_order(oid)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("收敛保护单失败 instance=%s：%s", instance_id, type(exc).__name__)
 
     def get_ticker(self, symbol: str) -> dict[str, Any] | None:
         tick = market.cached(symbol)
@@ -1992,6 +2025,12 @@ class Engine:
 async def _get_order_locked(db, order_id: int) -> Order | None:
     """读订单并加行锁（Postgres 的 FOR UPDATE；SQLite 不支持，会被忽略，靠 row_version 乐观锁兜底）。"""
     return (await db.execute(select(Order).where(Order.id == order_id).with_for_update())).scalar_one_or_none()
+
+
+def _drop_stale_cancel_reason(o: Order) -> None:
+    """订单最终成交了，之前撤单失败时留下的说明就是过期信息，不能再带进成交通知。"""
+    if o.status == "filled" and o.reason and o.reason.startswith("撤单失败"):
+        o.reason = None
 
 
 def _f(v: Any) -> float | None:
