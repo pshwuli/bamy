@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from sqlalchemy import select
 
 from bamy.core.crypto import decrypt
+from bamy.core.redact import describe_exc
 from bamy.db.models import Account, Order
 from bamy.db.session import session_scope
 
 log = logging.getLogger("bamy.userstream")
 
 RECONNECT_MAX = 60
+KEEP_ALIVE_MS = 20000
+HEALTHY_SECONDS = 30      # 连接撑过这么久再断，说明链路是好的，退避从头算，不接着往 60 秒涨
 
 
 class UserStream:
@@ -50,18 +54,19 @@ class UserStream:
                 pass
 
     async def sync(self) -> None:
-        """按"有运行中实盘实例的账号"收敛数据流集合。"""
+        """所有已填写、可用的账号一起建立数据流；不再只看"有运行中实例"的账号。
+
+        几个账号的任务在同一轮里同时创建，不再有先有后。已失效或被停用的账号不连。
+        """
         if self.engine is None:
             return
-        wanted = {r.account_id for r in self.engine.running.values() if not r.paper and r.account_id}
+        async with session_scope() as db:
+            rows = (await db.execute(select(Account).where(
+                Account.deleted_at.is_(None), Account.status.notin_(("invalid", "disabled"))))).scalars().all()
+        wanted = {a.id for a in rows}
         for aid in [a for a in self._tasks if a not in wanted]:
             await self.drop(aid)
-        if not wanted:
-            return
-        async with session_scope() as db:
-            rows = (await db.execute(select(Account).where(Account.id.in_(wanted)))).scalars().all()
-        for acc in rows:
-            await self.ensure(acc)
+        await asyncio.gather(*(self.ensure(acc) for acc in rows))
 
     async def close(self) -> None:
         for aid in list(self._tasks):
@@ -71,7 +76,10 @@ class UserStream:
         import ccxt.pro as ccxtpro
 
         opts: dict[str, Any] = {"apiKey": decrypt(account.api_key_enc), "secret": decrypt(account.api_secret_enc),
-                                "enableRateLimit": True}
+                                "enableRateLimit": True,
+                                # ccxt 对币安默认 180 秒才发一次心跳，而这台机器的链路约 60 秒空闲就会被掐断（code 1006，
+                                # 324 次连接存活中位数 65 秒）；缩到 20 秒，对照测试里默认心跳 96 秒断开、20 秒心跳连了 190 秒没断
+                                "streaming": {"keepAlive": KEEP_ALIVE_MS}}
         if account.market_type == "futures":
             # 合约账号的订单、止损单触发（ALGO_UPDATE）都走合约用户流；以前一律按现货订阅，
             # 合约成交推不过来，只能等 30/60 秒一轮的对账发现
@@ -84,6 +92,7 @@ class UserStream:
 
     async def _run(self, account_id: int) -> None:
         backoff = 1
+        connected_at: float | None = None
         while True:
             try:
                 async with session_scope() as db:
@@ -94,6 +103,7 @@ class UserStream:
                 client = self._clients.get(account_id) or self._client(account)
                 self._clients[account_id] = client
                 if fresh:
+                    connected_at = time.monotonic()
                     log.info("用户数据流订阅 account=%s 类型=%s", account_id, account.market_type)
                 orders = await client.watch_orders()
                 backoff = 1
@@ -102,7 +112,12 @@ class UserStream:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - 断线重连 + 状态补拉
-                log.warning("用户数据流断开 account=%s：%s，%ss 后重连", account_id, exc, backoff)
+                lived = time.monotonic() - connected_at if connected_at is not None else 0.0
+                connected_at = None       # 下一轮没建成新连接就不能沿用这次的起点
+                if lived >= HEALTHY_SECONDS:
+                    backoff = 1       # 空仓时没有订单事件，原来的退避永远不重置，一路涨到 60 秒
+                log.warning("用户数据流断开 account=%s：%s，连了 %.0f 秒，%ss 后重连",
+                            account_id, describe_exc(exc, 160), lived, backoff)
                 client = self._clients.pop(account_id, None)
                 if client is not None:
                     try:
@@ -128,7 +143,10 @@ class UserStream:
                                                            Order.account_id == account_id))).scalar_one_or_none()
         if oid is None:
             return  # 不是 BAMY 下的单，交给持仓对账处理
-        await self.engine._apply_result(oid, _parse_order(raw, coid))
+        result = _parse_order(raw, coid)
+        # 推送里的手续费只是这一笔成交的，不是订单累计；清掉，让成交落库时按订单号查一次累计手续费
+        result.fee, result.fee_currency = 0.0, None
+        await self.engine._apply_result(oid, result)
 
 
 user_stream = UserStream()
