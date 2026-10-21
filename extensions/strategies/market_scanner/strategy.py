@@ -75,6 +75,7 @@ class MarketScannerStrategy(BaseStrategy):
         self.t_scan = self.t_manage = self.t_peak = 0.0
         self.scan_task: asyncio.Task | None = None
         self.pending: dict[str, Any] | None = None  # 确认通过、等 tick 里下单的信号
+        self._abandon_why = ""                       # 最近一次放弃的原因，写进状态摘要
         self.synced = False                          # 本轮对账是否成功
         self.breaker_until = 0.0
         self.last_log = 0.0
@@ -166,6 +167,10 @@ class MarketScannerStrategy(BaseStrategy):
         if await self._confirm(sym, float(w["last"]), float(w["high"])):
             t = self.ctx.get_ticker(sym)
             self.pending = {"symbol": sym, "price": float((t or {}).get("price") or w["last"])}
+            await self._status(f"{head} | 命中 {len(hits)} 个，{sym} 确认通过，准备买入")
+        else:
+            # 命中了但确认没过：也要写状态，否则页面上一片空白，看不出策略在工作
+            await self._status(f"{head} | 命中 {len(hits)} 个，{sym} 确认未通过（{self._abandon_why}），继续观察")
 
     async def _confirm(self, sym: str, start: float, high: float) -> bool:
         """等 confirm_seconds 秒再看一次，4 道关卡全过才买；专门躲瞬间插针。"""
@@ -190,6 +195,7 @@ class MarketScannerStrategy(BaseStrategy):
         return True
 
     def _abandon(self, sym: str, why: str) -> bool:
+        self._abandon_why = why
         self.ctx.log_info(f"放弃 {sym}：{why}")
         return False
 
