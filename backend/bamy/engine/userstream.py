@@ -70,8 +70,14 @@ class UserStream:
     def _client(self, account: Account) -> Any:
         import ccxt.pro as ccxtpro
 
-        client = ccxtpro.binance({"apiKey": decrypt(account.api_key_enc), "secret": decrypt(account.api_secret_enc),
-                                  "enableRateLimit": True, "options": {"defaultType": "spot"}})
+        opts: dict[str, Any] = {"apiKey": decrypt(account.api_key_enc), "secret": decrypt(account.api_secret_enc),
+                                "enableRateLimit": True}
+        if account.market_type == "futures":
+            # 合约账号的订单、止损单触发（ALGO_UPDATE）都走合约用户流；以前一律按现货订阅，
+            # 合约成交推不过来，只能等 30/60 秒一轮的对账发现
+            client = ccxtpro.binanceusdm(opts)
+        else:
+            client = ccxtpro.binance({**opts, "options": {"defaultType": "spot"}})
         if account.env == "testnet":
             client.set_sandbox_mode(True)
         return client
@@ -84,8 +90,11 @@ class UserStream:
                     account = await db.get(Account, account_id)
                 if account is None or account.deleted_at is not None or account.status in {"invalid", "disabled"}:
                     return
+                fresh = account_id not in self._clients
                 client = self._clients.get(account_id) or self._client(account)
                 self._clients[account_id] = client
+                if fresh:
+                    log.info("用户数据流订阅 account=%s 类型=%s", account_id, account.market_type)
                 orders = await client.watch_orders()
                 backoff = 1
                 for raw in orders:
