@@ -290,6 +290,7 @@ class FuturesBook:
             px = px * (1 + slip) if side == "buy" else px * (1 - slip)
         fee_rate = _D(MAKER_FEE if maker else TAKER_FEE)
         total_fee = Decimal(0)
+        executed = Decimal(0)        # 实际成交量 = 平掉的 + 新开的；开仓分支不会扣 amt，不能用「请求量 - 剩余量」反推
         target = position_side or ("long" if side == "sell" else "short")
         close_key, p = self._position(symbol, target)
         closing_direction = ((target == "long" and side == "sell") or
@@ -310,6 +311,7 @@ class FuturesBook:
             if p["amount"] <= 0:
                 self.positions.pop(close_key, None)
             amt -= qty
+            executed += qty
         elif reduce_only:
             raise ExchangeError("没有可平的反向持仓（reduce_only）", 42244, rejected=True)
         if amt > 0 and not reduce_only:
@@ -321,6 +323,7 @@ class FuturesBook:
             self.balance -= margin + fee
             self.realized_pnl -= fee
             total_fee += fee
+            executed += amt
             new_side = "long" if side == "buy" else "short"
             open_key = self.key(symbol, new_side)
             cur = self.positions.get(open_key)
@@ -331,7 +334,6 @@ class FuturesBook:
                 cur["entry"] = (cur["entry"] * cur["amount"] + px * amt) / total
                 cur["amount"] = total
                 cur["margin"] += margin
-        executed = _D(amount) - amt
         return ExchangeOrder(exchange_order_id=f"paper-{client_order_id}", status="filled",
                              filled_amount=float(executed), filled_price=float(px) if executed else None,
                              fee=float(total_fee),
