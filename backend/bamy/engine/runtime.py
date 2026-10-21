@@ -38,6 +38,7 @@ from bamy.extensions.registry import registry
 from bamy.extensions.schema import SchemaError, decrypt_secrets, mask_secrets, validate
 from bamy.services import system_config
 from bamy.services.audit import write_audit
+from bamy.services.account_gate import account_blocks_order
 from bamy.services.order_purge import purgeable_ids
 from bamy.services.reconcile_diffs import Diff, record_diffs, spot_balance_diffs
 
@@ -843,7 +844,7 @@ class Engine:
                 raise ApiError(42231, "交易对与实例的市场类型不一致（合约交易对形如 BTC/USDT:USDT）")
             if not inst.paper:
                 account = await db.get(Account, inst.account_id)
-                if account is None or account.status != "online":
+                if account_blocks_order(account, bool(reduce_only)):
                     raise ApiError(40906, "账号不可用")
                 if account.readonly:
                     raise ApiError(40304)

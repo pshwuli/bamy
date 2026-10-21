@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import delete, select
 
 from bamy.core.config import settings
+from bamy.core.redact import describe_exc
 from bamy.db.models import Account, AccountHealth, ScheduledTask, SystemLog
 from bamy.db.session import session_scope
 from bamy.engine.client_pool import pool
@@ -89,7 +90,7 @@ class Scheduler:
                     latency = await asyncio.wait_for(client.ping(), timeout=10)
                     await asyncio.wait_for(client.verify(), timeout=15)
                 except Exception as exc:  # noqa: BLE001
-                    ok, msg = False, str(exc)[:1000]
+                    ok, msg = False, describe_exc(exc, 1000)      # 带异常类型：超时异常的文字是空的，不带类型就查不出原因
                     code = str(getattr(exc, "code", "error"))
                 async with session_scope() as db:
                     db.add(AccountHealth(account_id=account.id, success=ok, latency_ms=latency, error_code=code,
