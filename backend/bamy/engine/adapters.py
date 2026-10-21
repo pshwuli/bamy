@@ -406,12 +406,25 @@ def _fill_price(raw: dict[str, Any]) -> float | None:
     return p if p else None
 
 
+def _real_order_id(raw: dict[str, Any]) -> str | None:
+    """订单号：条件单触发后，推送里 info.ai 是真正撮合的订单号，顶层 id 是条件单号。
+
+    ai 非空就用它；为空（条件单还没触发、或是撤销）则退回顶层 id。
+    用条件单号去查成交明细查不到，手续费就补不上。
+    """
+    info = raw.get("info") or {}
+    real = info.get("ai")
+    if real not in (None, "", 0, "0"):
+        return str(real)
+    return str(raw.get("id")) if raw.get("id") is not None else None
+
+
 def _parse_order(raw: dict[str, Any], client_order_id: str | None) -> ExchangeOrder:
     status = STATUS_MAP.get(str(raw.get("status") or "").lower())
     if status is None:
         status = "unknown"
     return ExchangeOrder(
-        exchange_order_id=str(raw.get("id")) if raw.get("id") is not None else None,
+        exchange_order_id=_real_order_id(raw),
         status=status,
         filled_amount=float(raw.get("filled") or 0),
         filled_price=_fill_price(raw),
